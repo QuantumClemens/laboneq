@@ -31,7 +31,11 @@ fn resolve_timing_boundary_impl(node: &mut ExperimentNode) -> Result<usize> {
     let mut i = 0;
 
     while i < node.children.len() {
-        averaging_loop_count += resolve_timing_boundary_impl(node.children[i].make_mut())?;
+        averaging_loop_count += resolve_timing_boundary_impl(
+            node.children
+                .get_mut(i)
+                .expect("Internal error: Invalid child index."),
+        )?;
         if matches!(node.children[i].kind, Operation::AveragingLoop(_)) {
             // Wrap the averaging loop inside a real-time boundary.
             let children_count = node.children.len();
@@ -39,7 +43,7 @@ fn resolve_timing_boundary_impl(node: &mut ExperimentNode) -> Result<usize> {
             let mut rt_node = ExperimentNode::new(Operation::RealTimeBoundary);
             rt_node.children.push(averaging_loop);
             validate_real_time_boundary_nodes(&rt_node)?;
-            node.children.push(rt_node.into());
+            node.children.push(rt_node);
             node.children.swap(i, children_count - 1);
             averaging_loop_count += 1;
         }

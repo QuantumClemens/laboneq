@@ -180,7 +180,7 @@ fn calculate_result_length(
                     "Result length for awg '{}' on device '{}'.",
                     awg.uid,
                     awg.device.uid(),
-                , usage = usage);
+                , usage = Some(usage));
             }
         }
     }

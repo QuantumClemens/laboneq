@@ -7,8 +7,7 @@ use std::num::NonZeroU32;
 use laboneq_dsl::ExperimentNode;
 use laboneq_dsl::operation::{AveragingLoop, Operation};
 use laboneq_dsl::types::{
-    AcquisitionType, AveragingMode, HandleUid, PulseDef, PulseLength, PulseUid, SectionUid,
-    SignalUid,
+    AcquisitionType, AveragingMode, HandleUid, PulseDef, PulseLength, PulseUid, SignalUid,
 };
 use laboneq_units::duration::{Duration, Second, seconds};
 
@@ -48,7 +47,6 @@ impl ExperimentContext {
 }
 
 pub(crate) struct RealTimeLoopProperties {
-    pub uid: SectionUid,
     pub acquisition_type: AcquisitionType,
     pub averaging_mode: AveragingMode,
     pub count: NonZeroU32,
@@ -146,7 +144,6 @@ impl<'a> ExperimentContextCollector<'a> {
             ));
         }
         let rt_properties = RealTimeLoopProperties {
-            uid: op.uid,
             acquisition_type: op.acquisition_type,
             averaging_mode: op.averaging_mode,
             count: op.count,

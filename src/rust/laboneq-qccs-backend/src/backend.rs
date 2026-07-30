@@ -7,7 +7,7 @@ use codegenerator_py::{HardwareSetup, SignalChannelProperties, artifacts_to_py, 
 use laboneq_common::compiler_settings::CompilerSettings;
 use laboneq_compiler_py::compiler_backend::{
     CodeGenArtifact, CompilerBackend, Error as CompilerError, ExperimentView, FeedbackCalculator,
-    QccsFeedbackCalculator, SignalView,
+    SignalView,
 };
 use laboneq_compiler_py::compiler_backend::{CompilerBackendResult, PreprocessOutput};
 use laboneq_dsl::types::ExternalParameterUid;
@@ -17,6 +17,7 @@ use laboneq_py_utils::py_object_interner::PyObjectInterner;
 
 use crate::preprocessor::QccsBackendPreprocessedData;
 use crate::preprocessor::preprocess_experiment;
+use crate::qccs_feedback_calculator::{FeedbackSignal, QccsFeedbackCalculator};
 
 #[derive(Default)]
 pub struct QccsBackend {}
@@ -80,7 +81,18 @@ impl CompilerBackend for QccsBackend {
         Option<Box<dyn FeedbackCalculator<Error = CompilerError> + Send + Sync + 'static>>,
         CompilerError,
     > {
-        let model = QccsFeedbackCalculator::new(signals.iter().cloned())?;
+        let feedback_signals = signals.iter().map(|s| FeedbackSignal {
+            uid: s.uid(),
+            awg_key: *s.awg_key(),
+            signal_kind: s.signal_kind().clone(),
+            device_kind: s.device_kind(),
+            is_shfqc: s.device().is_shfqc(),
+            sampling_rate: s.sampling_rate(),
+            signal_delay: s.signal_delay(),
+            port_delay: s.port_delay().copied(),
+            start_delay: s.start_delay(),
+        });
+        let model = QccsFeedbackCalculator::new(feedback_signals)?;
         Ok(Some(Box::new(model)))
     }
 }

@@ -100,12 +100,6 @@ impl ExperimentPy {
         let rt_properties = self.context.rt_properties();
 
         let out = RtLoopPropertiesPy {
-            uid: self
-                .inner
-                .id_store
-                .resolve(rt_properties.uid)
-                .unwrap()
-                .to_string(),
             acquisition_type: acquisition_type_to_py(&rt_properties.acquisition_type).to_string(),
             averaging_mode: averaging_mode_to_py(&rt_properties.averaging_mode).to_string(),
             count: rt_properties.count.get(),
@@ -116,8 +110,6 @@ impl ExperimentPy {
 
 #[pyclass(name = "RtLoopProperties", frozen)]
 struct RtLoopPropertiesPy {
-    #[pyo3(get)]
-    uid: String,
     #[pyo3(get)]
     acquisition_type: String,
     #[pyo3(get)]

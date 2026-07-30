@@ -16,19 +16,15 @@ from laboneq.controller.recipe_processor import RecipeData, WaveformItem
 from laboneq.controller.utilities.exception import LabOneQControllerException
 from laboneq.core.utilities.replace_phase_increment import calc_ct_replacement
 from laboneq.core.utilities.replace_pulse import ReplacementType, calc_wave_replacements
-from laboneq.data.recipe import NtStepKey
-from laboneq.data.scheduled_experiment import (
-    ArtifactsCodegen,
-)
+from laboneq.data.artifacts_qccs import ArtifactsCodegen
+from laboneq.data.nt_step_key import NtStepKey
 
 if TYPE_CHECKING:
     import numpy.typing as npt
 
     from laboneq.core.types.enums.wave_type import WaveType
-    from laboneq.data.scheduled_experiment import (
-        CodegenWaveform,
-        CompilerArtifact,
-    )
+    from laboneq.data.artifacts_qccs import CodegenWaveform
+    from laboneq.data.scheduled_experiment import CompilerArtifact
     from laboneq.dsl.experiment.pulse import Pulse
 
 
@@ -120,7 +116,7 @@ def process_replacements_qccs(
     replacements: NearTimeReplacements,
 ):
     has_rt_exec_inits = any(
-        r.nt_step == nt_step for r in recipe_data.recipe.realtime_execution_init
+        r.nt_step == nt_step for r in recipe_data.artifacts.realtime_execution_init
     )
 
     # If new replacements have not been requested, and the current NT step

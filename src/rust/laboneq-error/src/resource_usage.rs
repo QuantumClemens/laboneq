@@ -13,12 +13,14 @@ pub struct ResourceExhaustionError {
     source: ContextualError,
 
     /// The usage of said exhausted resource, > 1.0, where 1.0 means total (100%) utilization
-    pub usage: f64,
+    pub usage: Option<f64>,
 }
 
 impl ResourceExhaustionError {
-    pub fn new(msg: impl Into<Cow<'static, str>>, usage: f64) -> Self {
-        assert!(usage > 1.0, "invalid usage report");
+    pub fn new(msg: impl Into<Cow<'static, str>>, usage: Option<f64>) -> Self {
+        if let Some(val) = usage {
+            assert!(val > 1.0, "invalid usage report");
+        }
         ResourceExhaustionError {
             source: ContextualError::from_str(msg),
             usage,
@@ -42,10 +44,11 @@ impl WithContext for ResourceExhaustionError {
 // differently - the first one encountered is not returned immediately, but all are seen and the one
 // corresponding to the most severe exhaustion is returned.
 pub fn intercept_and_collect<T>(
-    items: impl Iterator<Item = Result<T, LabOneQError>>,
+    items: impl IntoIterator<Item = Result<T, LabOneQError>>,
 ) -> Result<Vec<T>, LabOneQError> {
     let mut max_exhaustion: Option<ResourceExhaustionError> = None;
     let collected = items
+        .into_iter()
         .filter_map(|item| match item {
             Err(LabOneQError::ResourceExhaustion(err)) => {
                 match &max_exhaustion {
@@ -101,7 +104,7 @@ mod test {
     fn test_intercept_and_collect_ok() {
         let items = vec![Ok(1), Ok(2)];
 
-        let res = intercept_and_collect(items.into_iter());
+        let res = intercept_and_collect(items);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), vec![1, 2]);
     }
@@ -113,7 +116,7 @@ mod test {
             Ok(1),
             Err(ContextualError::from_str("xyz").into()),
         ];
-        let res = intercept_and_collect(items.into_iter());
+        let res = intercept_and_collect(items);
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().to_string(), "abc");
     }
@@ -121,30 +124,33 @@ mod test {
     #[test]
     fn test_intercept_and_collect_err_resource() {
         let items = vec![
-            Err(ResourceExhaustionError::new("abc", 1.4).into()),
+            Err(ResourceExhaustionError::new("abc", Some(1.4)).into()),
             Ok(1),
-            Err(ResourceExhaustionError::new("xyz", 1.2).into()),
+            Err(ResourceExhaustionError::new("xyz", Some(1.2)).into()),
         ];
         let items_rev = vec![
-            Err(ResourceExhaustionError::new("xyz", 1.2).into()),
+            Err(ResourceExhaustionError::new("xyz", Some(1.2)).into()),
             Ok(1),
-            Err(ResourceExhaustionError::new("abc", 1.4).into()),
+            Err(ResourceExhaustionError::new("abc", Some(1.4)).into()),
         ];
 
-        let res = intercept_and_collect(items.into_iter());
+        let res = intercept_and_collect(items);
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().to_string(), "abc");
 
-        let res = intercept_and_collect(items_rev.into_iter());
+        let res = intercept_and_collect(items_rev);
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().to_string(), "abc");
     }
 
     #[test]
     fn test_intercept_and_collect_err_resource_no_usage() {
-        let items = vec![Err(ResourceExhaustionError::new("abc", 1.1).into()), Ok(1)];
+        let items = vec![
+            Err(ResourceExhaustionError::new("abc", Some(1.1)).into()),
+            Ok(1),
+        ];
 
-        let res = intercept_and_collect(items.into_iter());
+        let res = intercept_and_collect(items);
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().to_string(), "abc");
     }
@@ -154,21 +160,21 @@ mod test {
         // test that the first non-resource-exhaustion error is returned no matter
         // in which order it arrives relative to resource-exhaustion error
         let items_res_first = vec![
-            Err(ResourceExhaustionError::new("resource error", 1.1).into()),
+            Err(ResourceExhaustionError::new("resource error", Some(1.1)).into()),
             Ok(1),
             Err(ContextualError::from_str("other error").into()),
         ];
         let items_other_first = vec![
             Err(ContextualError::from_str("other error").into()),
             Ok(1),
-            Err(ResourceExhaustionError::new("resource error", 1.1).into()),
+            Err(ResourceExhaustionError::new("resource error", Some(1.1)).into()),
         ];
 
-        let res = intercept_and_collect(items_res_first.into_iter());
+        let res = intercept_and_collect(items_res_first);
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().to_string(), "other error");
 
-        let res = intercept_and_collect(items_other_first.into_iter());
+        let res = intercept_and_collect(items_other_first);
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().to_string(), "other error");
     }

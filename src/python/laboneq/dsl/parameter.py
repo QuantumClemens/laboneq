@@ -63,9 +63,8 @@ class _ParameterArithmeticMixin(NDArrayOperatorsMixin):
         if method == "__call__":
             new_inputs = []
             driven_by: list[SweepParameter | LinearSweepParameter] = []
-            input: SweepParameter | LinearSweepParameter
             for input in inputs:
-                if isinstance(input, self.__class__):
+                if isinstance(input, _ParameterArithmeticMixin):
                     new_inputs.append(input.values)
                     driven_by.append(input)
                 else:

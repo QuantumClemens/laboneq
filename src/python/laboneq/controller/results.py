@@ -13,7 +13,7 @@ from laboneq.data.experiment_results import AcquiredResult, ExperimentResults
 
 if TYPE_CHECKING:
     from laboneq.core.types.numpy_support import NumPyArray
-    from laboneq.data.recipe import NtStepKey
+    from laboneq.data.nt_step_key import NtStepKey
     from laboneq.data.scheduled_experiment import (
         HandleResultShape,
         RtLoopProperties,

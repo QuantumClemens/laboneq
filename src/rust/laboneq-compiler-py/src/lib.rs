@@ -68,7 +68,6 @@ mod py_execution;
 pub mod py_experiment;
 mod py_helpers;
 mod py_result_shape;
-mod qccs_feedback_calculator;
 mod result_shape;
 mod rt_compiler;
 mod setup_processor;
@@ -197,15 +196,8 @@ fn build_experiment_capnp<B: CompilerBackend>(
         let msg = create_error_message(e);
         Error::new(resolve_ids(&msg, &experiment.id_store))
     })?;
-    let device_setup = DeviceSetup::new(
-        processed_setup
-            .signals
-            .into_iter()
-            .map(|s| (s.uid, s))
-            .collect(),
-        processed_setup.devices,
-    )
-    .map_err(Error::new)?;
+    let device_setup =
+        DeviceSetup::new(processed_setup.signals, processed_setup.devices).map_err(Error::new)?;
 
     process_experiment(&mut experiment, &device_setup).map_err(|e| {
         let msg = create_error_message(e);

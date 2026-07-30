@@ -39,10 +39,8 @@ if TYPE_CHECKING:
         NodeControlBase,
     )
     from laboneq.controller.recipe_processor import DeviceRecipeData, RecipeData
-    from laboneq.data.recipe import (
-        Initialization,
-        NtStepKey,
-    )
+    from laboneq.data.artifacts_qccs import Initialization
+    from laboneq.data.nt_step_key import NtStepKey
 
 _logger = logging.getLogger(__name__)
 

@@ -16,12 +16,12 @@ from laboneq.compiler.common.integration_times import (
 )
 from laboneq.compiler.seqc.linker import SeqCGenOutput, SeqCProgram
 from laboneq.core.types.enums.wave_type import WaveType
-from laboneq.data.awg_info import AwgKey
-from laboneq.data.scheduled_experiment import (
+from laboneq.data.artifacts_qccs import (
     COMPLEX_USAGE,
     ResultSource,
     WeightInfo,
 )
+from laboneq.data.awg_info import AwgKey
 
 if TYPE_CHECKING:
     from laboneq._rust import codegenerator as codegen_rs

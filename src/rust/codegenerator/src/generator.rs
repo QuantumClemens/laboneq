@@ -540,7 +540,7 @@ fn generate_code_for_multiple_awgs<T: SampleWaveforms + SampleIntegrationKernels
             })
         })
         .collect::<Vec<_>>();
-    intercept_and_collect(awg_results.into_iter())
+    intercept_and_collect(awg_results)
 }
 
 fn estimate_total_execution_time(root: &IrNode) -> f64 {
@@ -799,7 +799,7 @@ fn evaluate_resource_usage(
                     ct.n_entries,
                     ct.max_entries
                 );
-                Err(ResourceExhaustionError::new(msg, usage).into())
+                Err(ResourceExhaustionError::new(msg, Some(usage)).into())
             } else {
                 Ok(())
             }

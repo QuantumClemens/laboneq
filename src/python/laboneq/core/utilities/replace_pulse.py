@@ -18,19 +18,17 @@ from laboneq.core.utilities.pulse_sampler import (
     sample_pulse,
     verify_amplitude_no_clipping,
 )
-from laboneq.data.scheduled_experiment import (
-    ArtifactsCodegen,
-)
+from laboneq.data.artifacts_qccs import ArtifactsCodegen
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
     from laboneq.core.types.compiled_experiment import CompiledExperiment
-    from laboneq.data.scheduled_experiment import (
+    from laboneq.data.artifacts_qccs import (
         CodegenWaveform,
-        CompilerArtifact,
         PulseWaveformMap,
     )
+    from laboneq.data.scheduled_experiment import CompilerArtifact
     from laboneq.dsl.experiment.pulse import Pulse
 
 _logger = logging.getLogger(__name__)

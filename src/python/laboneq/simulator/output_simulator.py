@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
     from laboneq.core.types.compiled_experiment import CompiledExperiment
-    from laboneq.data.recipe import RealtimeExecutionInit
+    from laboneq.data.artifacts_qccs import RealtimeExecutionInit
     from laboneq.dsl.device.device_setup import DeviceSetup
 
 
@@ -234,7 +234,7 @@ class OutputSimulator:
         awg_id = _AWG_ID(
             self._compiled_experiment.device_setup,
             channel,
-            self._compiled_experiment.scheduled_experiment.recipe.realtime_execution_init,
+            self._compiled_experiment.scheduled_experiment.artifacts.realtime_execution_init,
         )
 
         sim = self._simulations[awg_id.prog]

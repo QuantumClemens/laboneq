@@ -4,13 +4,15 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::{intern, prelude::*, types::PyDict, types::PyModule};
 
+use laboneq_compiler_py::compiler_backend::Error;
+
 use crate::qccs_feedback_calculator::feedback_calculator::{FeedbackDevice, FeedbackModel};
 
 /// Wrapper around the QCCS feedback model.
 ///
 /// This struct provides an interface to calculate feedback latency using the QCCS feedback model implemented in Python.
 /// It interacts with the `zhinst.timing_models` Python module to build the feedback model.
-pub struct QCCSFeedbackModel {}
+pub(crate) struct QCCSFeedbackModel {}
 
 impl FeedbackModel for QCCSFeedbackModel {
     fn get_latency(
@@ -19,13 +21,15 @@ impl FeedbackModel for QCCSFeedbackModel {
         acquisition_device: &FeedbackDevice,
         generator_device: &FeedbackDevice,
         local_feedback: bool,
-    ) -> anyhow::Result<i64> {
-        let latency = self.get_latency(
-            acquisition_end_samples,
-            acquisition_device,
-            generator_device,
-            local_feedback,
-        )?;
+    ) -> Result<i64, Error> {
+        let latency = self
+            .get_latency(
+                acquisition_end_samples,
+                acquisition_device,
+                generator_device,
+                local_feedback,
+            )
+            .map_err(Error::new)?;
         Ok(latency)
     }
 }

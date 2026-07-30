@@ -98,19 +98,29 @@ pub fn pulse_parameters_to_py_dict(
     let dict = PyDict::new(py);
     for (key, value) in parameters.iter() {
         let key_str = id_store.resolve(*key).unwrap();
-        match value {
-            ExternalOrValue::ExternalParameter(uid) => {
-                dict.set_item(key_str, py_objects.resolve(uid))?;
-            }
-            ExternalOrValue::ValueOrParameter(value_or_param) => {
-                dict.set_item(
-                    key_str,
-                    value_or_parameter_to_py(py, value_or_param, id_store)?,
-                )?;
-            }
-        }
+        let value = external_or_value_to_py(py, value, id_store, py_objects)?;
+        dict.set_item(key_str, value)?;
     }
     Ok(dict.into())
+}
+
+fn external_or_value_to_py<'py>(
+    py: Python<'py>,
+    value: &ExternalOrValue,
+    id_store: &NamedIdStore,
+    py_objects: &PyObjectInterner<ExternalParameterUid>,
+) -> PyResult<Bound<'py, PyAny>> {
+    match value {
+        ExternalOrValue::ExternalParameter(uid) => Ok(py_objects
+            .resolve(uid)
+            .expect("Internal error: Failed to resolve external parameter uid to python object")
+            .bind(py))
+        .cloned(),
+        ExternalOrValue::ValueOrParameter(value_or_param) => {
+            value_or_parameter_to_py(py, value_or_param, id_store)
+        }
+        ExternalOrValue::None => Ok(py.None().into_bound(py)),
+    }
 }
 
 /// Convert a [`ValueOrParameter`] to a Python object.

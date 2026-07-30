@@ -18,27 +18,27 @@ from laboneq.compiler.common.iface_linker import ILinker
 from laboneq.core.exceptions import LabOneQException
 from laboneq.core.utilities import seqc_compile
 from laboneq.core.utilities.seqc_compile import SeqCCompileItem
-from laboneq.data.awg_info import AwgKey
-from laboneq.data.recipe import NtStepKey
-from laboneq.data.scheduled_experiment import (
+from laboneq.data.artifacts_qccs import (
     COMPLEX_USAGE,
     ArtifactsCodegen,
     CommandTableMapEntry,
     ParameterPhaseIncrementMap,
 )
+from laboneq.data.awg_info import AwgKey
+from laboneq.data.nt_step_key import NtStepKey
 
 if TYPE_CHECKING:
     import laboneq._rust.codegenerator as codegen_rs
     from laboneq.compiler import CompilerSettings
     from laboneq.compiler.common.integration_times import IntegrationTimes
     from laboneq.core.types.enums.wave_type import WaveType
-    from laboneq.data.scheduled_experiment import (
+    from laboneq.data.artifacts_qccs import (
         AwgWeights,
         CodegenWaveform,
-        CompilerArtifact,
         PulseMapEntry,
         ResultSource,
     )
+    from laboneq.data.scheduled_experiment import CompilerArtifact
 
 
 @dataclass
@@ -66,8 +66,8 @@ class CombinedRTOutputSeqC(CombinedOutput):
     ] = field(default_factory=dict)
     neartime_steps: list[NeartimeStep] = field(default_factory=list)
     measurements: list[codegen_rs.Measurement] = field(default_factory=list)
-    total_execution_time: float = 0
-    max_execution_time_per_step: float = 0
+    _total_execution_time: float = 0
+    _max_execution_time_per_step: float = 0
     integration_unit_allocations: dict[
         AwgKey, list[codegen_rs.IntegrationUnitAllocation]
     ] = field(default_factory=dict)
@@ -108,6 +108,14 @@ class CombinedRTOutputSeqC(CombinedOutput):
         integration_info = self.integration_times.signal_infos.get(signal_id)
         assert integration_info is not None
         return integration_info.length_in_samples
+
+    @staticmethod
+    def total_execution_time(self) -> float:
+        return self._total_execution_time
+
+    @staticmethod
+    def max_execution_time_per_step(self) -> float:
+        return self._max_execution_time_per_step
 
 
 @dataclass
@@ -249,8 +257,8 @@ class SeqCLinker(ILinker):
             integration_times=output.integration_times,
             integration_weights=integration_weights,
             result_handle_maps=output.result_handle_maps,
-            total_execution_time=output.total_execution_time,
-            max_execution_time_per_step=output.total_execution_time,
+            _total_execution_time=output.total_execution_time,
+            _max_execution_time_per_step=output.total_execution_time,
             src=src,
             waves=output.waves,
             requires_long_readout=defaultdict(list, output.requires_long_readout),
@@ -360,10 +368,10 @@ class SeqCLinker(ILinker):
             if new_integration_weights is not None:
                 this.integration_weights[seqc_name] = new_integration_weights
             this.waves.update(new_waves)
-            this.max_execution_time_per_step = max(
-                this.max_execution_time_per_step, new.total_execution_time
+            this._max_execution_time_per_step = max(
+                this._max_execution_time_per_step, new.total_execution_time
             )
-            this.total_execution_time += new.total_execution_time
+            this._total_execution_time += new.total_execution_time
 
         for (
             new_device_id,
@@ -408,7 +416,7 @@ class SeqCLinker(ILinker):
 
     @staticmethod
     def repeat_previous(this: CombinedRTOutputSeqC, previous: SeqCGenOutput):
-        this.total_execution_time += previous.total_execution_time
+        this._total_execution_time += previous.total_execution_time
 
     @staticmethod
     def finalize(

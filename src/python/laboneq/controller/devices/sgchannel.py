@@ -33,8 +33,8 @@ from laboneq.controller.recipe_processor import (
 )
 from laboneq.controller.utilities.exception import LabOneQControllerException
 from laboneq.core.types.enums.port_mode import PortMode
-from laboneq.data.recipe import NtStepKey
-from laboneq.data.scheduled_experiment import ArtifactsCodegen
+from laboneq.data.artifacts_qccs import ArtifactsCodegen
+from laboneq.data.nt_step_key import NtStepKey
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -50,7 +50,10 @@ if TYPE_CHECKING:
         DeviceRecipeData,
         RecipeData,
     )
-    from laboneq.data.recipe import IO, Initialization
+    from laboneq.data.artifacts_qccs import (
+        IO,
+        Initialization,
+    )
     from laboneq.data.scheduled_experiment import ScheduledExperiment
 
 _logger = logging.getLogger(__name__)
@@ -342,7 +345,7 @@ class SGChannel(SHFChannelBase):
             rt_exec_step = next(
                 (
                     r
-                    for r in recipe_data.recipe.realtime_execution_init
+                    for r in recipe_data.artifacts.realtime_execution_init
                     if r.device_id == self._device_uid
                     and r.awg_index == self._core_index
                     and r.nt_step == effective_nt_step
@@ -516,7 +519,7 @@ class SHFSGMixIn:
         scheduled_experiment: ScheduledExperiment,
     ):
         initialization = get_initialization_by_device_uid(
-            scheduled_experiment.recipe, self.uid
+            scheduled_experiment.artifacts, self.uid
         )
         if initialization is None:
             return

@@ -34,7 +34,7 @@ fn resolve_match_impl(
             if let Operation::Acquire(acq) = &child.kind {
                 seen_acquisitions.insert(acq.handle, acq.signal);
             }
-            resolve_match_impl(child.make_mut(), signals, seen_acquisitions)?;
+            resolve_match_impl(child, signals, seen_acquisitions)?;
         }
         return Ok(());
     };

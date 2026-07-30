@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from laboneq.controller.utilities.exception import LabOneQControllerException
 
 if TYPE_CHECKING:
-    from laboneq.data.recipe import RealtimeExecutionInit
+    from laboneq.data.artifacts_qccs import RealtimeExecutionInit
 
 
 def _merge(

@@ -25,7 +25,6 @@ use laboneq_units::duration::{Duration, Second};
 // Re-export commonly used types for convenience
 pub use crate::error::Error;
 pub use crate::experiment::DeviceSignal;
-pub use crate::qccs_feedback_calculator::QccsFeedbackCalculator;
 pub use crate::signal_view::SignalView;
 pub use laboneq_scheduler::FeedbackCalculator;
 

@@ -13,7 +13,7 @@ if TYPE_CHECKING:
         InstrumentConnection,
     )
     from laboneq.controller.recipe_processor import DeviceRecipeData, RecipeData
-    from laboneq.data.recipe import NtStepKey
+    from laboneq.data.nt_step_key import NtStepKey
 
 
 class CoreBase(ABC):

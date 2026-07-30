@@ -31,8 +31,8 @@ if TYPE_CHECKING:
     from laboneq.compiler.workflow.compiler_output import (
         CombinedRTCompilerOutputContainer,
     )
+    from laboneq.data.artifacts_qccs import CodegenWaveform
     from laboneq.data.awg_info import AwgKey
-    from laboneq.data.scheduled_experiment import CodegenWaveform
 
 
 def _count_samples(

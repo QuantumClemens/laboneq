@@ -8,6 +8,7 @@ mod output_routing;
 mod ppc_connections;
 mod precompensation;
 mod preprocessor;
+mod qccs_feedback_calculator;
 mod setup_processor;
 
 pub mod ports;

@@ -74,7 +74,7 @@ pub(crate) fn compiler_settings_from_py_dict(ob: &Bound<PyDict>) -> PyResult<Com
         .map_err(|err| LabOneQException::new_err(err.to_string()))
 }
 
-/// Convert a [`Precompensation`] into the Recipe compatible Python dictionary format.
+/// Convert a [`Precompensation`] into the QCCS artifact compatible Python dictionary format.
 pub(crate) fn precompensation_to_py<'py>(
     py: Python<'py>,
     precomp: &Precompensation,

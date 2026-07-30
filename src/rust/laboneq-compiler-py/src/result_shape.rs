@@ -427,7 +427,7 @@ impl ResultShapeExtractor<'_> {
 
             // Sort the match cases according to the order of the sweep parameter values.
             let case_order = sort_match_cases_to_parameter(
-                node.children.iter().map(|c| c.as_ref()),
+                node.children.iter(),
                 self.sweep_parameter_by_uid(&param)?,
             )?;
             for (case_index, case_node) in case_order.enumerate() {

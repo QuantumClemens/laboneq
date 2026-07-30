@@ -32,9 +32,10 @@ struct Constant {
     stringValue @3 :Text;
     rawBytesValue @4 :Data;
     # Arbitrary binary data.
-    pickledValue @5 :Data;
-    # Pickled Python object. Used for arbitrary Python objects passed as custom functional
-    # pulse parameters.
+    pythonValue @5 :Data;
+    # Python object container. Used for arbitrary Python objects passed as custom functional
+    # pulse parameters or user callback functions. The value can either be pickled or JSON serialized.
+    # LabOne Q automatic pickling is DEPRECATED, use `rawBytesValue` with roducer/consumer-agreed encoding instead.
   }
 }
 

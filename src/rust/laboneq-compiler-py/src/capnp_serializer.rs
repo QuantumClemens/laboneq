@@ -16,6 +16,8 @@
 
 use std::collections::HashMap;
 
+use laboneq_py_utils::constant_serializer;
+
 use crate::capnp_py_types::{
     CancellationSourcePy, ChannelTypePy, DeviceSetupCapnpPy, DeviceSignalPy, ExperimentCapnpPy,
     ExperimentSignalPy, InstrumentPy, InternalConnectionPy, OscillatorPy, SetupDescriptionPy,
@@ -178,7 +180,7 @@ struct Serializer<'py> {
     /// uid string → final signal index.
     signal_indices: HashMap<String, u32>,
     /// Cached `pickle.dumps` callable — imported once to avoid per-call module lookup.
-    pickle_dumps: Py<PyAny>,
+    pickle_dumps: Bound<'py, PyAny>,
     /// Collected sweep parameters by UID for consistency checking across multiple references.
     collected_sweep_parameters: HashMap<String, Bound<'py, PyAny>>,
 }
@@ -187,8 +189,8 @@ impl<'py> Serializer<'py> {
     fn new(py: Python<'py>) -> Result<Self> {
         let pickle_dumps = py
             .import(intern!(py, "pickle"))?
-            .getattr(intern!(py, "dumps"))?
-            .unbind();
+            .getattr(intern!(py, "dumps"))?;
+
         Ok(Self {
             dsl_types: DslTypes::new(py)?,
             np: py.import(intern!(py, "numpy"))?,
@@ -198,6 +200,14 @@ impl<'py> Serializer<'py> {
             pickle_dumps,
             collected_sweep_parameters: HashMap::new(),
         })
+    }
+
+    fn serialize_external_opaque(&self, value: &Bound<'py, PyAny>) -> Result<Vec<u8>> {
+        if let Ok(json_bytes) = constant_serializer::serialize_json(value.py(), value) {
+            return Ok(json_bytes);
+        }
+        let py_bytes = self.pickle_dumps.call1((value,))?;
+        Ok(py_bytes.extract::<Vec<u8>>()?)
     }
 
     // === Index lookup helpers ===
@@ -421,7 +431,7 @@ impl<'py> Serializer<'py> {
                                     val.reborrow().init_constant().set_integer(*v);
                                 }
                                 PulseParamValue::Pickled(bytes) => {
-                                    val.reborrow().init_constant().set_pickled_value(bytes);
+                                    val.reborrow().init_constant().set_python_value(bytes);
                                 }
                                 PulseParamValue::RawBytes(bytes) => {
                                     val.reborrow().init_constant().set_raw_bytes_value(bytes);
@@ -1068,7 +1078,7 @@ impl<'py> Serializer<'py> {
         // value
         let value_py = obj.getattr(intern!(py, "value"))?;
         if !value_py.is_none() {
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &value_py,
                 &mut set_node.reborrow().get_value().map_err(Error::new)?,
             )?;
@@ -1101,7 +1111,7 @@ impl<'py> Serializer<'py> {
         // Amplitude
         let amplitude_py = obj.getattr(intern!(py, "amplitude"))?;
         if !amplitude_py.is_none() {
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &amplitude_py,
                 &mut play.reborrow().get_amplitude().map_err(Error::new)?,
             )?;
@@ -1110,7 +1120,7 @@ impl<'py> Serializer<'py> {
         // Phase
         let phase_py = obj.getattr(intern!(py, "phase"))?;
         if !phase_py.is_none() {
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &phase_py,
                 &mut play.reborrow().get_phase().map_err(Error::new)?,
             )?;
@@ -1119,7 +1129,7 @@ impl<'py> Serializer<'py> {
         // Increment oscillator phase
         let inc_osc_py = obj.getattr(intern!(py, "increment_oscillator_phase"))?;
         if !inc_osc_py.is_none() {
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &inc_osc_py,
                 &mut play
                     .reborrow()
@@ -1131,7 +1141,7 @@ impl<'py> Serializer<'py> {
         // Set oscillator phase
         let set_osc_py = obj.getattr(intern!(py, "set_oscillator_phase"))?;
         if !set_osc_py.is_none() {
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &set_osc_py,
                 &mut play
                     .reborrow()
@@ -1143,7 +1153,7 @@ impl<'py> Serializer<'py> {
         // Length
         let length_py = obj.getattr(intern!(py, "length"))?;
         if !length_py.is_none() {
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &length_py,
                 &mut play.reborrow().get_length().map_err(Error::new)?,
             )?;
@@ -1181,7 +1191,7 @@ impl<'py> Serializer<'py> {
             let key_str: &str = key.extract()?;
             entry.set_key(key_str);
             let mut val_builder = entry.init_value();
-            self.set_pulse_parameter_value(value, &mut val_builder)?;
+            self.set_value_entry(value, &mut val_builder)?;
         }
         Ok(())
     }
@@ -1261,7 +1271,7 @@ impl<'py> Serializer<'py> {
         delay.set_signal(signal_id);
 
         let time_py = obj.getattr(intern!(py, "time"))?;
-        self.set_sweep_value_from_py_or_param(
+        self.set_value_from_py(
             &time_py,
             &mut delay.reborrow().get_time().map_err(Error::new)?,
         )?;
@@ -1371,7 +1381,7 @@ impl<'py> Serializer<'py> {
                         let key_str: &str = key.extract()?;
                         entry.set_key(key_str);
                         let mut val_builder = entry.init_value();
-                        self.set_pulse_parameter_value(value, &mut val_builder)?;
+                        self.set_value_entry(value, &mut val_builder)?;
                     }
                 }
             }
@@ -1426,7 +1436,7 @@ impl<'py> Serializer<'py> {
             entry.set_key(key_str);
 
             let mut val_builder = entry.init_value();
-            self.set_pulse_parameter_value(value, &mut val_builder)?;
+            self.set_value_entry(value, &mut val_builder)?;
         }
         Ok(())
     }
@@ -1497,14 +1507,7 @@ impl<'py> Serializer<'py> {
                         } else if let Ok(raw) = value.cast::<PyBytes>() {
                             PulseParamValue::RawBytes(raw.as_bytes().to_vec())
                         } else {
-                            // Arbitrary Python objects (e.g. ExternalParameter, SciPy interp objects)
-                            // are pickled into bytes for opaque round-tripping through capnp.
-                            let pickled = self.pickle_dumps.bind(py).call1((&value,))?;
-                            let bytes: Vec<u8> = pickled
-                                .cast::<PyBytes>()
-                                .map_err(Error::new)?
-                                .as_bytes()
-                                .to_vec();
+                            let bytes = self.serialize_external_opaque(&value)?;
                             PulseParamValue::Pickled(bytes)
                         };
                     entries.push(PulseParamEntry {
@@ -1568,12 +1571,12 @@ impl<'py> Serializer<'py> {
 
     // === Sweep value helpers ===
 
-    fn set_pulse_parameter_value(
+    fn set_value_entry(
         &mut self,
         obj: &Bound<'py, PyAny>,
         builder: &mut common_capnp::value::Builder<'_>,
     ) -> Result<()> {
-        match self.set_sweep_value_from_py_or_param(obj, builder) {
+        match self.set_value_from_py(obj, builder) {
             Ok(()) => Ok(()),
             Err(_) => self.set_external_opaque_constant(obj, builder),
         }
@@ -1592,18 +1595,12 @@ impl<'py> Serializer<'py> {
                 .set_raw_bytes_value(raw.as_bytes());
             return Ok(());
         }
-        // Pickling is strictly a fallback for arbitrary Python objects passed into custom
-        // functional pulse parameters (e.g., a SciPy interpolation object). Because the
-        // Rust compiler does not execute these (they are evaluated in Python during waveform
-        // sampling), they must be passed opaquely.
-        let py = obj.py();
-        let pickled = self.pickle_dumps.bind(py).call1((obj,))?;
-        let bytes = pickled.cast::<PyBytes>().map_err(Error::new)?.as_bytes();
-        builder.reborrow().init_constant().set_pickled_value(bytes);
+        let bytes = self.serialize_external_opaque(obj)?;
+        builder.reborrow().init_constant().set_python_value(&bytes);
         Ok(())
     }
 
-    fn set_sweep_value_from_py_or_param(
+    fn set_value_from_py(
         &mut self,
         obj: &Bound<'py, PyAny>,
         builder: &mut common_capnp::value::Builder<'_>,
@@ -1644,7 +1641,7 @@ impl<'py> Serializer<'py> {
     ) -> Result<()> {
         let mut osc_builder = builder.init_oscillator();
         osc_builder.set_uid(oscillator.uid.to_str()?);
-        self.set_sweep_value_from_py_or_param(
+        self.set_value_from_py(
             &oscillator.frequency,
             &mut osc_builder.reborrow().get_frequency().map_err(Error::new)?,
         )?;
@@ -1681,7 +1678,7 @@ impl<'py> Serializer<'py> {
         calibration_builder.set_automute(signal.automute);
 
         if let Some(amplitude) = &signal.amplitude {
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 amplitude,
                 &mut calibration_builder
                     .reborrow()
@@ -1691,7 +1688,7 @@ impl<'py> Serializer<'py> {
         }
 
         if let Some(lo_freq) = &signal.lo_frequency {
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 lo_freq,
                 &mut calibration_builder
                     .reborrow()
@@ -1701,7 +1698,7 @@ impl<'py> Serializer<'py> {
         }
 
         if let Some(port_delay) = &signal.port_delay {
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 port_delay,
                 &mut calibration_builder
                     .reborrow()
@@ -1711,7 +1708,7 @@ impl<'py> Serializer<'py> {
         }
 
         if let Some(voltage_offset) = &signal.voltage_offset {
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 voltage_offset,
                 &mut calibration_builder
                     .reborrow()
@@ -1799,7 +1796,7 @@ impl<'py> Serializer<'py> {
                     .set_value(frequency);
             }
 
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &amplifier_pump.pump_power,
                 &mut pump_builder
                     .reborrow()
@@ -1807,7 +1804,7 @@ impl<'py> Serializer<'py> {
                     .map_err(Error::new)?,
             )?;
 
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &amplifier_pump.pump_frequency,
                 &mut pump_builder
                     .reborrow()
@@ -1815,7 +1812,7 @@ impl<'py> Serializer<'py> {
                     .map_err(Error::new)?,
             )?;
 
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &amplifier_pump.probe_power,
                 &mut pump_builder
                     .reborrow()
@@ -1823,7 +1820,7 @@ impl<'py> Serializer<'py> {
                     .map_err(Error::new)?,
             )?;
 
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &amplifier_pump.probe_frequency,
                 &mut pump_builder
                     .reborrow()
@@ -1831,7 +1828,7 @@ impl<'py> Serializer<'py> {
                     .map_err(Error::new)?,
             )?;
 
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &amplifier_pump.cancellation_phase,
                 &mut pump_builder
                     .reborrow()
@@ -1839,7 +1836,7 @@ impl<'py> Serializer<'py> {
                     .map_err(Error::new)?,
             )?;
 
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &amplifier_pump.cancellation_attenuation,
                 &mut pump_builder
                     .reborrow()
@@ -1868,14 +1865,14 @@ impl<'py> Serializer<'py> {
             let mut output_builder = added_outputs_builder.reborrow().get(i as u32);
 
             output_builder.set_source_signal(output.source.to_str()?);
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &output.amplitude_scaling,
                 &mut output_builder
                     .reborrow()
                     .get_amplitude_scaling()
                     .map_err(Error::new)?,
             )?;
-            self.set_sweep_value_from_py_or_param(
+            self.set_value_from_py(
                 &output.phase_shift,
                 &mut output_builder
                     .reborrow()
@@ -1901,7 +1898,7 @@ impl<'py> Serializer<'py> {
             // Voltage offsets for I and Q. We use the presence of each entry to determine whether to set it,
             if let Some(voltage_offsets) = &mixer_calibration.voltage_offsets {
                 if let Some(value) = voltage_offsets.first() {
-                    self.set_sweep_value_from_py_or_param(
+                    self.set_value_from_py(
                         value,
                         &mut mixer_builder
                             .reborrow()
@@ -1910,7 +1907,7 @@ impl<'py> Serializer<'py> {
                     )?;
                 }
                 if let Some(value) = voltage_offsets.get(1) {
-                    self.set_sweep_value_from_py_or_param(
+                    self.set_value_from_py(
                         value,
                         &mut mixer_builder
                             .reborrow()
@@ -1942,7 +1939,7 @@ impl<'py> Serializer<'py> {
                 {
                     let mut entry_builder =
                         correction_matrix_builder.reborrow().get(flat_index as u32);
-                    self.set_sweep_value_from_py_or_param(correction, &mut entry_builder)?;
+                    self.set_value_from_py(correction, &mut entry_builder)?;
                 }
             }
         }

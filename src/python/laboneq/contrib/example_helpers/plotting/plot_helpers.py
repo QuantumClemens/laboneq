@@ -22,7 +22,7 @@ from laboneq.simulator.output_simulator import OutputSimulator
 
 if TYPE_CHECKING:
     from laboneq.core.types.compiled_experiment import CompiledExperiment
-    from laboneq.data.scheduled_experiment import WeightInfo
+    from laboneq.data.artifacts_qccs import WeightInfo
 
 
 def zi_mpl_theme():
@@ -48,7 +48,7 @@ def _integration_weights_by_signal(
     scheduled_exp = compiled_experiment.scheduled_experiment
 
     awg_to_channel_signals = {}
-    for integrator in scheduled_exp.recipe.integrator_allocations:
+    for integrator in scheduled_exp.artifacts.integrator_allocations:
         key = (integrator.device_id, integrator.awg)
         integration_unit_to_signals: dict[int, set[str]] = {}
         for int_ch in integrator.channels:
@@ -61,7 +61,7 @@ def _integration_weights_by_signal(
 
     rt_step_by_awg = set()
     weight_info_by_signal: dict[str, list[WeightInfo]] = {}
-    for rt_init in scheduled_exp.recipe.realtime_execution_init:
+    for rt_init in scheduled_exp.artifacts.realtime_execution_init:
         key = (rt_init.device_id, rt_init.awg_index)
         integration_unit_to_signals = awg_to_channel_signals.get(key, {})
         if key not in rt_step_by_awg:

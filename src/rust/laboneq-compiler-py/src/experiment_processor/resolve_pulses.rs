@@ -44,7 +44,6 @@ struct Context<'a> {
 
 fn resolve_pulses_impl(node: &mut ExperimentNode, ctx: &mut Context) -> Result<()> {
     for child in node.children.iter_mut() {
-        let child = child.make_mut();
         match &mut child.kind {
             Operation::Acquire(obj) => {
                 resolve_acquire_pulses_and_length(obj, ctx.id_store, ctx.pulses, ctx.signals)?;

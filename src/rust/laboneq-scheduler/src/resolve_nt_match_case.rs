@@ -47,7 +47,7 @@ fn resolve_nt_match_case_impl(node: &mut ExperimentNode, near_time_parameters: &
                         on_system_grid: false,
                         section_timing_mode: SectionTimingMode::Relaxed,
                     }));
-                    section.children = case.make_mut().take_children();
+                    section.children = case.take_children();
                     *node = section;
                     break;
                 }
@@ -57,6 +57,6 @@ fn resolve_nt_match_case_impl(node: &mut ExperimentNode, near_time_parameters: &
         }
     };
     for child in node.children.iter_mut() {
-        resolve_nt_match_case_impl(child.make_mut(), near_time_parameters);
+        resolve_nt_match_case_impl(child, near_time_parameters);
     }
 }

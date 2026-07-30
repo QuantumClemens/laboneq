@@ -1,9 +1,7 @@
 // Copyright 2025 Zurich Instruments AG
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
-
-pub type NodeChild<T> = Arc<Node<T>>;
+pub type NodeChild<T> = Node<T>;
 
 /// A generic node in a tree.
 ///
@@ -26,14 +24,6 @@ where
             kind,
             children: Vec::new(),
         }
-    }
-
-    pub fn make_mut(self: &mut Arc<Node<T>>) -> &mut Self {
-        Arc::make_mut(self)
-    }
-
-    pub fn as_ptr(self: &Arc<Node<T>>) -> *const Node<T> {
-        Arc::as_ptr(self)
     }
 
     pub fn take_children(&mut self) -> Vec<NodeChild<T>> {

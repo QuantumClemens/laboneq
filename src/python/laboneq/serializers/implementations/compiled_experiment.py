@@ -28,10 +28,39 @@ if TYPE_CHECKING:
 _converter = make_converter()
 
 
+def _reshape_v1_scheduled_experiment_dict(data: dict) -> dict:
+    """Reshape a pre-refactor `ScheduledExperimentModel` dict.
+
+    Before the Recipe/ArtifactsCodegen split, `total_execution_time`,
+    `max_step_execution_time`, and `versions` lived nested under `recipe`, and the
+    five QCCS-specific lists (`initializations`, `realtime_execution_init`,
+    `oscillator_params`, `integrator_allocations`, `acquire_lengths`) lived there too
+    instead of on `artifacts`. Lift/move them into the new shape in place.
+    """
+    data = dict(data)
+    old_recipe = data.pop("recipe")
+    data["total_execution_time"] = old_recipe["total_execution_time"]
+    data["max_step_execution_time"] = old_recipe["max_step_execution_time"]
+    data["versions"] = old_recipe["versions"]
+
+    artifacts = dict(data["artifacts"])
+    for key in (
+        "initializations",
+        "realtime_execution_init",
+        "oscillator_params",
+        "integrator_allocations",
+        "acquire_lengths",
+    ):
+        artifacts[key] = old_recipe[key]
+    data["artifacts"] = artifacts
+
+    return data
+
+
 @serializer(types=CompiledExperiment, public=True)
 class CompiledExperimentSerializer(VersionedClassSerializer[CompiledExperiment]):
     SERIALIZER_ID = "laboneq.serializers.implementations.CompiledExperimentSerializer"
-    VERSION = 2
+    VERSION = 3
 
     @classmethod
     def to_dict(
@@ -82,7 +111,7 @@ class CompiledExperimentSerializer(VersionedClassSerializer[CompiledExperiment])
                 warnings.warn(_mismatch, UserWarning, stacklevel=2)
 
     @classmethod
-    def from_dict_v2(
+    def from_dict_v3(
         cls,
         serialized_data: JsonSerializableType,
         options: DeserializationOptions | None = None,
@@ -109,6 +138,35 @@ class CompiledExperimentSerializer(VersionedClassSerializer[CompiledExperiment])
         )
 
     @classmethod
+    def from_dict_v2(
+        cls,
+        serialized_data: JsonSerializableType,
+        options: DeserializationOptions | None = None,
+    ) -> CompiledExperiment:
+        cls._check_laboneq_version(serialized_data.get("__laboneq_version__"), options)
+
+        device_setup = from_dict(serialized_data["__data__"]["device_setup"], options)
+        experiment = from_dict(serialized_data["__data__"]["experiment"], options)
+        experiment_dict = from_dict(
+            serialized_data["__data__"]["experiment_dict"], options
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            scheduled_experiment = _converter.structure(
+                _reshape_v1_scheduled_experiment_dict(
+                    serialized_data["__data__"]["scheduled_experiment"]
+                ),
+                ScheduledExperimentModel,
+            )
+
+        return CompiledExperiment(
+            device_setup=device_setup,
+            experiment=experiment,
+            experiment_dict=experiment_dict,
+            scheduled_experiment=scheduled_experiment,
+        )
+
+    @classmethod
     def from_dict_v1(
         cls, serialized_data, options: DeserializationOptions | None = None
     ) -> CompiledExperiment:
@@ -119,7 +177,7 @@ class CompiledExperimentSerializer(VersionedClassSerializer[CompiledExperiment])
 @serializer(types=ScheduledExperiment, public=True)
 class ScheduledExperimentSerializer(VersionedClassSerializer[ScheduledExperiment]):
     SERIALIZER_ID = "laboneq.serializers.implementations.ScheduledExperimentSerializer"
-    VERSION = 1
+    VERSION = 2
 
     @classmethod
     def to_dict(
@@ -160,7 +218,7 @@ class ScheduledExperimentSerializer(VersionedClassSerializer[ScheduledExperiment
                 warnings.warn(_mismatch, UserWarning, stacklevel=2)
 
     @classmethod
-    def from_dict_v1(
+    def from_dict_v2(
         cls,
         serialized_data: JsonSerializableType,
         options: DeserializationOptions | None = None,
@@ -172,6 +230,23 @@ class ScheduledExperimentSerializer(VersionedClassSerializer[ScheduledExperiment
             warnings.simplefilter("ignore", FutureWarning)
             scheduled_experiment = _converter.structure(
                 serialized_data["__data__"],
+                ScheduledExperimentModel,
+            )
+        return scheduled_experiment
+
+    @classmethod
+    def from_dict_v1(
+        cls,
+        serialized_data: JsonSerializableType,
+        options: DeserializationOptions | None = None,
+    ) -> ScheduledExperiment:
+        assert isinstance(serialized_data, dict)
+        cls._check_laboneq_version(serialized_data.get("__laboneq_version__"), options)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            scheduled_experiment = _converter.structure(
+                _reshape_v1_scheduled_experiment_dict(serialized_data["__data__"]),
                 ScheduledExperimentModel,
             )
         return scheduled_experiment

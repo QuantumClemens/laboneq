@@ -3,11 +3,11 @@
 
 import re
 
-from laboneq.data.scheduled_experiment import (
+from laboneq.data.artifacts_qccs import (
     ArtifactsCodegen,
-    ResultShapeInfo,
     ResultSource,
 )
+from laboneq.data.scheduled_experiment import ResultShapeInfo
 
 
 class ResultShapeInfoDeserializer:
@@ -24,10 +24,10 @@ class ArtifactsCodegenDeserializer:
     @staticmethod
     def deserialize(mapping: dict) -> ArtifactsCodegen:
         mapping = dict(mapping)
-        mapping["result_handle_maps"] = {
-            _deserialize_result_source(k): v
-            for k, v in mapping.get("result_handle_maps", {}).items()
-        }
+        if result_handle_maps := mapping.get("result_handle_maps"):
+            mapping["result_handle_maps"] = {
+                _deserialize_result_source(k): v for k, v in result_handle_maps.items()
+            }
         return ArtifactsCodegen(**mapping)
 
 

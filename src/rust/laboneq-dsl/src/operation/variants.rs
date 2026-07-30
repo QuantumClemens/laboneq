@@ -41,6 +41,7 @@ pub struct Delay {
 pub enum ExternalOrValue {
     ExternalParameter(ExternalParameterUid),
     ValueOrParameter(ValueOrParameter<NumericLiteral>),
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq)]

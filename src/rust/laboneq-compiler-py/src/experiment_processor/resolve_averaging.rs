@@ -1,12 +1,11 @@
 // Copyright 2025 Zurich Instruments AG
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
+use laboneq_dsl::ExperimentNode;
+use laboneq_dsl::operation::{AveragingLoop, Operation};
+use laboneq_dsl::types::AveragingMode;
 
 use crate::error::{Error, Result};
-use laboneq_dsl::{ExperimentNode, NodeChild, operation::Operation, types::AveragingMode};
-
-type NodePtr = *const ExperimentNode;
 
 /// Transformation pass to resolve sequential averaging loop in the experiment.
 ///
@@ -25,24 +24,20 @@ type NodePtr = *const ExperimentNode;
 /// * `Ok(false)` if no modifications were made.
 /// * `Err` if the experiment structure is invalid.
 pub(super) fn resolve_averaging(node: &mut ExperimentNode) -> Result<bool> {
-    if let Some(acq_index) = find_sequential_acquire_position(node) {
-        let innermost_sweep = find_innermost_sweep(&node.children[acq_index]);
-        if innermost_sweep.is_none() {
+    if let Some(avg_index) = find_sequential_averaging_position(node) {
+        let Operation::AveragingLoop(avg) = node.children[avg_index].kind.clone() else {
+            unreachable!("Internal error: Expected AveragingLoop operation");
+        };
+        if !insert_to_innermost_sweep(&mut node.children[avg_index], &avg)? {
             return Ok(false);
         }
-        let acquire_value = node.children[acq_index].kind.clone();
-        insert_to_innermost_sweep(
-            node.children.get_mut(acq_index).unwrap(),
-            &acquire_value,
-            &innermost_sweep.unwrap(),
-        )?;
-        // Remove the original acquire node and move its children up
-        let mut acq = node.children.remove(acq_index);
-        node.children = acq.make_mut().take_children();
+        // Remove the original averaging loop node and move its children up
+        let mut avg = node.children.remove(avg_index);
+        node.children = avg.take_children();
         return Ok(true);
     } else {
         for child in node.children.iter_mut() {
-            if resolve_averaging(child.make_mut())? {
+            if resolve_averaging(child)? {
                 // Exit early if a change was made
                 return Ok(true);
             }
@@ -51,7 +46,7 @@ pub(super) fn resolve_averaging(node: &mut ExperimentNode) -> Result<bool> {
     Ok(false)
 }
 
-fn find_sequential_acquire_position(node: &ExperimentNode) -> Option<usize> {
+fn find_sequential_averaging_position(node: &ExperimentNode) -> Option<usize> {
     for (idx, child) in node.children.iter().enumerate() {
         if matches!(&child.kind, Operation::AveragingLoop(obj) if obj.averaging_mode == AveragingMode::Sequential)
         {
@@ -65,63 +60,68 @@ fn is_sweep(node: &Operation) -> bool {
     matches!(node, Operation::Sweep(_))
 }
 
-fn find_innermost_sweep(node: &NodeChild) -> Option<NodePtr> {
-    let mut prev_sweep = None;
-    for child in node.children.iter() {
-        if let Some(curr_sweep) = find_innermost_sweep(child) {
-            prev_sweep = Some(curr_sweep);
+/// Finds the path of child indices from `node` down to the inner-most sweep in its subtree,
+/// preferring the most deeply nested sweep when sweeps are chained.
+///
+/// Returns `None` if `node`'s subtree (`node` included) contains no sweep at all, The path is returned in
+/// leaf-to-root order; reverse it to walk from `node` down to the sweep.
+fn find_innermost_sweep_path(node: &ExperimentNode) -> Option<Vec<usize>> {
+    for (idx, child) in node.children.iter().enumerate() {
+        if let Some(mut path) = find_innermost_sweep_path(child) {
+            path.push(idx);
+            return Some(path);
         }
     }
-    prev_sweep.or_else(|| {
-        if is_sweep(&node.kind) {
-            Some(node.as_ptr())
-        } else {
-            None
-        }
-    })
+    is_sweep(&node.kind).then(Vec::new)
 }
 
+/// Descends into `node` and inserts `averaging_op` as the sole child of the inner-most sweep,
+/// wrapping the sweep's previous children.
+///
+/// A sweep is considered inner-most if none of its descendants are themselves a sweep;
+/// its own children structure is unrestricted (see module docs). Returns `Ok(true)` once
+/// inserted, or `Ok(false)` if `node`'s subtree contains no sweep at all.
 fn insert_to_innermost_sweep(
-    node: &mut Arc<ExperimentNode>,
-    acquire: &Operation,
-    innermost_sweep: &NodePtr,
+    node: &mut ExperimentNode,
+    averaging_op: &AveragingLoop,
 ) -> Result<bool> {
-    if &node.as_ptr() == innermost_sweep {
-        let mut averaging = if let Operation::AveragingLoop(acq) = acquire {
-            acq.clone()
-        } else {
-            unreachable!("Internal error: Expected AveragingLoop operation")
-        };
-        averaging.alignment = if let Operation::Sweep(sweep) = &node.kind {
-            sweep.alignment
-        } else {
-            unreachable!("Internal error: Expected Sweep operation")
-        };
-        let mut acq = ExperimentNode::new(Operation::AveragingLoop(averaging));
-        let node = node.make_mut();
-        acq.children = node.take_children();
-        node.children.push(acq.into());
-        return Ok(true);
-    }
-    // This validation will ensure that the section graph from acquire loop to inner-most sweep is a linear chain.
-    // Each section must have exactly one child section, except for the inner-most sweep.
-    if node.children.len() > 1 && &node.as_ptr() != innermost_sweep {
-        let msg = format!(
-            "Section {} has multiple children. \
-            With sequential averaging, the section graph from acquire loop to inner-most sweep must be a linear chain, with only a single subsection at each level.",
-            node.kind
-                .section_info()
-                .map(|info| info.uid.0)
-                .expect("Internal error: Section must have a UID")
-        );
-        return Err(Error::new(msg));
-    }
-    for child in node.make_mut().children.iter_mut() {
-        if insert_to_innermost_sweep(child, acquire, innermost_sweep)? {
-            return Ok(true);
+    let Some(mut path) = find_innermost_sweep_path(node) else {
+        // No sweep anywhere below `node`: nothing to do, and the linear-chain constraint
+        // below does not apply to this subtree.
+        return Ok(false);
+    };
+    path.reverse();
+
+    // Walk down to the inner-most sweep, validating along the way that the section graph
+    // from the averaging loop to the inner-most sweep is a linear chain: each section must
+    // have exactly one child, except for the inner-most sweep itself.
+    let mut current = node;
+    for idx in path {
+        if current.children.len() > 1 {
+            let msg = format!(
+                "Section {} has multiple children. \
+                With sequential averaging, the section graph from acquire loop to inner-most sweep must be a linear chain, with only a single subsection at each level.",
+                current
+                    .kind
+                    .section_info()
+                    .map(|info| info.uid.0)
+                    .expect("Internal error: Section must have a UID")
+            );
+            return Err(Error::new(msg));
         }
+        current = &mut current.children[idx];
     }
-    Ok(false)
+
+    let mut averaging = averaging_op.clone();
+    averaging.alignment = if let Operation::Sweep(sweep) = &current.kind {
+        sweep.alignment
+    } else {
+        unreachable!("Internal error: Expected Sweep operation")
+    };
+    let mut acq_node = ExperimentNode::new(Operation::AveragingLoop(averaging));
+    acq_node.children = current.take_children();
+    current.children.push(acq_node);
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -149,7 +149,7 @@ mod tests {
         builder.build()
     }
 
-    fn make_acquire_rt(
+    fn make_averaging_rt(
         store: &mut NamedIdStore,
         averaging_mode: AveragingMode,
         alignment: SectionAlignment,
@@ -166,7 +166,7 @@ mod tests {
         }
     }
 
-    /// Test that acquire loop is handled appropriately for sequential averaging.
+    /// Test that averaging loop is handled appropriately for sequential averaging.
     #[test]
     fn test_resolve_averaging_sequential_averaging() {
         let mut store = NamedIdStore::new();
@@ -179,7 +179,7 @@ mod tests {
             [(
                 Operation::Sweep(make_sweep(&mut store, "near-time-sweep")),
                 [(
-                    Operation::AveragingLoop(make_acquire_rt(
+                    Operation::AveragingLoop(make_averaging_rt(
                         &mut store,
                         AveragingMode::Sequential,
                         SectionAlignment::Left
@@ -207,7 +207,7 @@ mod tests {
                     [(
                         Operation::Sweep(make_sweep(&mut store, "sweep1")),
                         [(
-                            Operation::AveragingLoop(make_acquire_rt(
+                            Operation::AveragingLoop(make_averaging_rt(
                                 &mut store,
                                 AveragingMode::Sequential,
                                 SectionAlignment::Right // Averaging inherits alignment from innermost sweep
@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(tree, tree_expected);
     }
 
-    /// Test that acquire loop is handled appropriately for non-sequential averaging.
+    /// Test that averaging loop is handled appropriately for non-sequential averaging.
     #[test]
     fn test_resolve_averaging_non_sequential_averaging() {
         let mut store = NamedIdStore::new();
@@ -235,7 +235,7 @@ mod tests {
         let mut tree = node_structure!(
             Operation::Root,
             [(
-                Operation::AveragingLoop(make_acquire_rt(
+                Operation::AveragingLoop(make_averaging_rt(
                     &mut store,
                     AveragingMode::Cyclic,
                     SectionAlignment::Left
@@ -262,11 +262,11 @@ mod tests {
             signal: SignalUid(store.get_or_insert("reserve")),
         };
 
-        // AcquireLoopRT with sequential averaging children cannot have siblings
+        // AveragingLoop with sequential averaging children cannot have siblings
         let mut tree = node_structure!(
             Operation::Root,
             [(
-                Operation::AveragingLoop(make_acquire_rt(
+                Operation::AveragingLoop(make_averaging_rt(
                     &mut store,
                     AveragingMode::Sequential,
                     SectionAlignment::Left
@@ -294,11 +294,11 @@ mod tests {
                 .contains(&err_msg)
         );
 
-        // Sections inside AcquireLoopRT must be linear to innermost sweep (Each subsection must have exactly one child)
+        // Sections inside AveragingLoop must be linear to innermost sweep (Each subsection must have exactly one child)
         let mut tree = node_structure!(
             Operation::Root,
             [(
-                Operation::AveragingLoop(make_acquire_rt(
+                Operation::AveragingLoop(make_averaging_rt(
                     &mut store,
                     AveragingMode::Sequential,
                     SectionAlignment::Left

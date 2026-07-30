@@ -9,8 +9,8 @@ from typing import Literal
 import numpy.typing as npt
 
 from laboneq.compiler.seqc.waveform_sampler import SampledWaveformSignature
+from laboneq.data.artifacts_qccs import CodegenWaveform, PulseMapEntry
 from laboneq.data.compilation_job import PulseDef
-from laboneq.data.scheduled_experiment import CodegenWaveform, PulseMapEntry
 
 class SignalType(Enum):
     IQ = auto()

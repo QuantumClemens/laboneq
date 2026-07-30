@@ -41,11 +41,11 @@ fn visit_node(
         });
 
         for child in node.children.iter_mut() {
-            visit_node(child.make_mut(), &mut local_trackers)?;
+            visit_node(child, &mut local_trackers)?;
         }
     } else {
         for child in node.children.iter_mut() {
-            visit_node(child.make_mut(), trackers)?;
+            visit_node(child, trackers)?;
         }
     }
     Ok(())

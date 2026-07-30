@@ -7,38 +7,19 @@ from __future__ import annotations
 
 import re
 import sys
-from enum import Enum
-from typing import Any, Callable, ClassVar, Literal, Optional, Type, Union
+from typing import Any, Callable, ClassVar, Type
 
 import attrs
 import numpy
 
-from laboneq.core.types.enums.awg_signal_type import AWGSignalType
-from laboneq.core.types.enums.port_mode import PortMode
 from laboneq.data.awg_info import AwgKey
-from laboneq.data.recipe import (
-    AWG,
-    IO,
-    AcquireLength,
-    Config,
-    Gains,
-    Initialization,
-    IntegratorAllocation,
-    Measurement,
-    NtStepKey,
-    OscillatorParam,
-    RealtimeExecutionInit,
-    Recipe,
-    RoutedOutput,
-    SoftwareVersions,
-)
 from laboneq.data.scheduled_experiment import (
     CompilerArtifact,
     HandleResultShape,
     ResultShapeInfo,
-    ResultSource,
     RtLoopProperties,
     ScheduledExperiment,
+    SoftwareVersions,
 )
 from laboneq.executor.executor import Statement
 from laboneq.serializers._legacy.serializer import Serializer
@@ -52,149 +33,9 @@ from ._common import (
 )
 from ._experiment import AcquisitionTypeModel, AveragingModeModel
 
-# Models for Recipe:
-
-
-class AWGSignalTypeModel(Enum):
-    IQ = "iq"
-    SINGLE = "single"
-    DOUBLE = "double"
-    _target_class = AWGSignalType
-
-
-@attrs.define
-class NtStepKeyModel:
-    indices: tuple[int, ...]
-    _target_class: ClassVar[Type] = NtStepKey
-
-
-@attrs.define
-class GainsModel:
-    diagonal: Union[float, str]
-    off_diagonal: Union[float, str]
-    _target_class: ClassVar[Type] = Gains
-
-
-@attrs.define
-class RoutedOutputModel:
-    from_channel: int
-    amplitude: Union[float, str]
-    phase: Union[float, str]
-    _target_class: ClassVar[Type] = RoutedOutput
-
-
-@attrs.define
-class IOModel:
-    # type of following attributes are not clear from the original code.
-    # precompensation, lo_frequency, port_delay, and amplitude
-    # Use Any for cattrs to pass it through
-    channel: int
-    enable: bool | None
-    modulation: bool | None
-    offset: float | str | None
-    gains: GainsModel | None
-    range: float | None
-    range_unit: str | None
-    precompensation: Any
-    lo_frequency: Any
-    port_mode: PortMode | None
-    port_delay: Any
-    scheduler_port_delay: float
-    marker_mode: str | None
-    amplitude: Any
-    routed_outputs: list[RoutedOutputModel]
-    enable_output_mute: bool
-    _target_class: ClassVar[Type] = IO
-
-
-@attrs.define
-class AWGModel:
-    awg: int | str
-    signal_type: AWGSignalTypeModel
-    signals: set[str]
-    source_feedback_register: int | Literal["local"] | None
-    codeword_bitshift: int | None
-    codeword_bitmask: int | None
-    feedback_register_index_select: int | None
-    command_table_match_offset: int | None
-    target_feedback_register: int | Literal["local"] | None
-    result_length: int | None
-    _target_class: ClassVar[Type] = AWG
-
-
-@attrs.define
-class MeasurementModel:
-    length: int
-    channel: int = 0
-    _target_class: ClassVar[Type] = Measurement
-
-
-@attrs.define
-class ConfigModel:
-    lead_delay: float
-    sampling_rate: float | None
-    _target_class: ClassVar[Type] = Config
-
-
-@attrs.define
-class InitializationModel:
-    device_uid: str
-    device_type: str | None
-    config: ConfigModel
-    awgs: list[AWGModel]
-    outputs: list[IOModel]
-    inputs: list[IOModel]
-    measurements: list[MeasurementModel]
-
-    # assume ppchannels is a list of dictionaries with simple values
-    ppchannels: list[dict[str, str | int | float | bool | None]]
-    _target_class: ClassVar[Type] = Initialization
-
-
-@attrs.define
-class OscillatorParamModel:
-    id: str
-    device_id: str
-    channel: int
-    signal_id: str
-    allocated_index: int
-    frequency: Optional[float]
-    param: Optional[str]
-    _target_class: ClassVar[Type] = OscillatorParam
-
-
-@attrs.define
-class IntegratorAllocationModel:
-    signal_id: str
-    device_id: str
-    awg: int
-    channels: list[int]
-    kernel_count: int
-    thresholds: list[float]
-    _target_class: ClassVar[Type] = IntegratorAllocation
-
-
-@attrs.define
-class AcquireLengthModel:
-    signal_id: str
-    acquire_length: int
-    _target_class: ClassVar[Type] = AcquireLength
-
-
-@attrs.define
-class RealtimeExecutionInitModel:
-    device_id: str
-    awg_index: int
-    program_ref: str
-    nt_step: NtStepKeyModel
-    wave_indices_ref: str | None
-    kernel_indices_ref: str | None
-    _target_class: ClassVar[Type] = RealtimeExecutionInit
-
 
 @attrs.define
 class RtLoopPropertiesModel:
-    uid: str
     acquisition_type: AcquisitionTypeModel
     averaging_mode: AveragingModeModel
     shots: int
@@ -225,19 +66,6 @@ class ResultShapeInfoModel:
     shapes: dict[str, HandleResultShapeModel]
 
     _target_class: ClassVar[Type] = ResultShapeInfo
-
-
-@attrs.define
-class RecipeModel:
-    initializations: list[InitializationModel]
-    realtime_execution_init: list[RealtimeExecutionInitModel]
-    oscillator_params: list[OscillatorParamModel]
-    integrator_allocations: list[IntegratorAllocationModel]
-    acquire_lengths: list[AcquireLengthModel]
-    total_execution_time: float
-    max_step_execution_time: float
-    versions: SoftwareVersionsModel
-    _target_class: ClassVar[Type] = Recipe
 
 
 # Plugin registry for CompilerArtifact subclasses
@@ -289,7 +117,6 @@ class CompilerArtifactModel:
 @attrs.define
 class ScheduledExperimentModel:
     device_setup_fingerprint: str
-    recipe: RecipeModel
     rt_loop_properties: RtLoopPropertiesModel
     result_shape_info: ResultShapeInfoModel
 
@@ -301,6 +128,9 @@ class ScheduledExperimentModel:
     artifacts: CompilerArtifactModel
     schedule: dict[str, Any] | None
     execution: Statement
+    total_execution_time: float
+    max_step_execution_time: float
+    versions: SoftwareVersionsModel
 
     _target_class: ClassVar[Type] = ScheduledExperiment
 
@@ -324,21 +154,6 @@ def _structure_awg_key(obj, _) -> AwgKey:
     if awg_idx.isnumeric():
         awg_idx = int(awg_idx)
     return AwgKey(device_id, awg_idx)
-
-
-def _unstructure_result_source(obj: ResultSource):
-    return f"ResultSource({obj.device_id}, {obj.awg_id}, {obj.integrator_idx})"
-
-
-def _structure_result_source(obj, _) -> ResultSource:
-    match_result = re.fullmatch(r"ResultSource\((.*), (.*), (.*)\)", obj)
-    assert match_result is not None
-    device_id, awg_id, integrator_idx = match_result.groups()
-    if awg_id.isnumeric():
-        awg_id = int(awg_id)
-    return ResultSource(
-        device_id, awg_id, int(integrator_idx) if integrator_idx != "None" else None
-    )
 
 
 def _unstructure_np_or_list_np(obj: numpy.ndarray | list[numpy.ndarray]):
@@ -371,8 +186,6 @@ def make_converter():
     # and cannot be serialized to a dict
     converter.register_unstructure_hook(AwgKey, _unstructure_awg_key)
     converter.register_structure_hook(AwgKey, _structure_awg_key)
-    converter.register_unstructure_hook(ResultSource, _unstructure_result_source)
-    converter.register_structure_hook(ResultSource, _structure_result_source)
 
     # The type of HandleResultShapeModel.axis_values is simple, yet the serializer is not able to consume it,
     # even though we have serializers for both list and numpy.ndarray. Thus, have to register special hooks.

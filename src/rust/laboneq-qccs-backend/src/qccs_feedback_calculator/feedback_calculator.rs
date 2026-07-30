@@ -4,22 +4,33 @@
 use std::collections::HashMap;
 
 use laboneq_dsl::types::{SignalUid, ValueOrParameter};
-use laboneq_ir::system::AwgDevice;
 
+use laboneq_common::device_traits::DeviceTraits;
 use laboneq_common::types::{AwgKey, DeviceKind, SignalKind};
-use laboneq_scheduler::FeedbackCalculator;
+use laboneq_compiler_py::compiler_backend::{Error, FeedbackCalculator};
 use laboneq_units::duration::{Duration, Second, seconds};
 
-use crate::error::Error;
 use crate::qccs_feedback_calculator::feedback_model::QCCSFeedbackModel;
-use crate::signal_view::SignalView;
 
 type Samples = i64;
 /// Latency in samples added by the ExecuteTableEntry command.
 const EXECUTETABLEENTRY_LATENCY: Samples = 3;
 
+/// Signal properties needed to compute QCCS feedback latency.
+pub(crate) struct FeedbackSignal {
+    pub(crate) uid: SignalUid,
+    pub(crate) awg_key: AwgKey,
+    pub(crate) signal_kind: SignalKind,
+    pub(crate) device_kind: DeviceKind,
+    pub(crate) is_shfqc: bool,
+    pub(crate) sampling_rate: f64,
+    pub(crate) signal_delay: Duration<Second>,
+    pub(crate) port_delay: Option<ValueOrParameter<Duration<Second>>>,
+    pub(crate) start_delay: Duration<Second>,
+}
+
 #[derive(Debug, Clone)]
-pub enum FeedbackDevice {
+pub(crate) enum FeedbackDevice {
     Shfqa,
     Uhfqa,
     Hdawg,
@@ -39,7 +50,7 @@ impl std::fmt::Display for FeedbackDevice {
     }
 }
 
-pub trait FeedbackModel {
+pub(crate) trait FeedbackModel {
     /// Get the feedback latency in samples from the feedback model.
     fn get_latency(
         &self,
@@ -47,7 +58,7 @@ pub trait FeedbackModel {
         qa_device: &FeedbackDevice,
         sg_device: &FeedbackDevice,
         local_feedback: bool,
-    ) -> anyhow::Result<Samples>;
+    ) -> Result<Samples, Error>;
 }
 
 /// QCCS feedback calculator for latency calculation in feedback experiments.
@@ -55,7 +66,7 @@ pub trait FeedbackModel {
 /// The calculator uses a feedback model to compute the latency based on
 /// acquisition and generator signal parameters for each signal involved in
 /// the feedback loop.
-pub struct QccsFeedbackCalculator<M: FeedbackModel> {
+pub(crate) struct QccsFeedbackCalculator<M: FeedbackModel> {
     acquisition_signal_params: HashMap<SignalUid, AcquisitionParameters>,
     generator_signal_params: HashMap<SignalUid, GeneratorParameters>,
     acquisition_generator_mapping: HashMap<SignalUid, SignalUid>,
@@ -111,8 +122,8 @@ struct GeneratorParameters {
 }
 
 impl QccsFeedbackCalculator<QCCSFeedbackModel> {
-    pub fn new<'a>(
-        signals: impl Iterator<Item = SignalView<'a>> + 'a,
+    pub(crate) fn new(
+        signals: impl Iterator<Item = FeedbackSignal>,
     ) -> Result<QccsFeedbackCalculator<QCCSFeedbackModel>, Error> {
         Self::new_with_model(signals, QCCSFeedbackModel::new())
     }
@@ -122,13 +133,13 @@ impl<M> QccsFeedbackCalculator<M>
 where
     M: FeedbackModel,
 {
-    pub(crate) fn new_with_model<'a>(
-        signals: impl Iterator<Item = SignalView<'a>> + 'a,
+    pub(crate) fn new_with_model(
+        signals: impl Iterator<Item = FeedbackSignal>,
         model: M,
     ) -> Result<QccsFeedbackCalculator<M>, Error> {
         let signal_map = signals
             .into_iter()
-            .map(|s| (s.uid(), s))
+            .map(|s| (s.uid, s))
             .collect::<HashMap<_, _>>();
 
         // Organize signals into acquisition and generator signals per AWG.
@@ -139,15 +150,15 @@ where
 
         // First map acquisition and generator signals
         for signal in signal_map.values() {
-            match signal.signal_kind() {
+            match signal.signal_kind {
                 SignalKind::Integration => {
                     acquisition_signals_per_awg
-                        .entry(*signal.awg_key())
+                        .entry(signal.awg_key)
                         .or_default()
-                        .push(signal.uid());
+                        .push(signal.uid);
                 }
                 _ => {
-                    generator_signals_per_awg.insert(*signal.awg_key(), signal.uid());
+                    generator_signals_per_awg.insert(signal.awg_key, signal.uid);
                 }
             }
         }
@@ -171,20 +182,18 @@ where
         let mut generator_signal_params = HashMap::new();
 
         for signal in signal_map.values() {
-            match signal.signal_kind() {
+            match signal.signal_kind {
                 SignalKind::Integration => {
-                    let acq_signal = signal_map.get(&signal.uid()).expect(
-                        "Internal error: Acquisition signal not found in feedback calculator",
-                    );
+                    let acq_signal = signal;
                     let gen_signal = acquisition_generator_mapping
-                        .get(&signal.uid())
+                        .get(&signal.uid)
                         .and_then(|gen_uid| signal_map.get(gen_uid));
                     let params = Self::extract_acquisition_parameters(acq_signal, gen_signal)?;
-                    acquisition_signal_params.insert(signal.uid(), params);
+                    acquisition_signal_params.insert(signal.uid, params);
                 }
                 _ => {
                     let params = Self::extract_generator_parameters(signal)?;
-                    generator_signal_params.insert(signal.uid(), params);
+                    generator_signal_params.insert(signal.uid, params);
                 }
             }
         }
@@ -344,48 +353,49 @@ where
     }
 
     fn extract_generator_parameters(
-        generator_signal: &SignalView<'_>,
+        generator_signal: &FeedbackSignal,
     ) -> Result<GeneratorParameters, Error> {
-        let lead_time = generator_signal.start_delay();
-        let signal_delay = generator_signal.signal_delay();
-        let sampling_rate = generator_signal.sampling_rate();
-        let sample_multiple = generator_signal.device_traits().sample_multiple as i64;
+        let lead_time = generator_signal.start_delay;
+        let signal_delay = generator_signal.signal_delay;
+        let sampling_rate = generator_signal.sampling_rate;
+        let sample_multiple =
+            DeviceTraits::from_device_kind(&generator_signal.device_kind).sample_multiple as i64;
 
         Ok(GeneratorParameters {
             lead_time,
             signal_delay,
             sampling_rate,
             sample_multiple,
-            device: awg_device_to_feedback_device(generator_signal.device()),
+            device: feedback_device(generator_signal)?,
         })
     }
 
     fn extract_acquisition_parameters(
-        acquisition_signal: &SignalView<'_>,
-        generator_signal: Option<&SignalView<'_>>,
+        acquisition_signal: &FeedbackSignal,
+        generator_signal: Option<&FeedbackSignal>,
     ) -> Result<AcquisitionParameters, Error> {
         let mut generator_signal_delay = seconds(0.0);
         let mut generator_port_delay = ValueOrParameter::Value(seconds(0.0));
         if let Some(generator_signal) = generator_signal {
-            generator_signal_delay = generator_signal.signal_delay();
-            generator_port_delay = *generator_signal
-                .port_delay()
-                .unwrap_or(&ValueOrParameter::Value(seconds(0.0)));
+            generator_signal_delay = generator_signal.signal_delay;
+            generator_port_delay = generator_signal
+                .port_delay
+                .unwrap_or(ValueOrParameter::Value(seconds(0.0)));
         }
-        let acquisition_start_delay = acquisition_signal.start_delay();
-        let acquisition_signal_delay = acquisition_signal.signal_delay();
-        let acquisition_port_delay = *acquisition_signal
-            .port_delay()
-            .unwrap_or(&ValueOrParameter::Value(seconds(0.0)));
+        let acquisition_start_delay = acquisition_signal.start_delay;
+        let acquisition_signal_delay = acquisition_signal.signal_delay;
+        let acquisition_port_delay = acquisition_signal
+            .port_delay
+            .unwrap_or(ValueOrParameter::Value(seconds(0.0)));
 
-        let integration_dsp_latency = acquisition_signal
-            .device_traits()
+        let acquisition_device_traits =
+            DeviceTraits::from_device_kind(&acquisition_signal.device_kind);
+        let integration_dsp_latency = acquisition_device_traits
             .integration_dsp_latency
             .unwrap_or(seconds(0.0));
 
-        let sampling_rate = acquisition_signal.sampling_rate();
-        let port_granularity_samples =
-            acquisition_signal.device_traits().port_delay_granularity as i64;
+        let sampling_rate = acquisition_signal.sampling_rate;
+        let port_granularity_samples = acquisition_device_traits.port_delay_granularity as i64;
 
         Ok(AcquisitionParameters {
             acquisition_start_delay,
@@ -396,7 +406,7 @@ where
             integration_dsp_latency,
             sampling_rate,
             port_granularity_samples,
-            device: awg_device_to_feedback_device(acquisition_signal.device()),
+            device: feedback_device(acquisition_signal)?,
         })
     }
 
@@ -472,16 +482,19 @@ impl FeedbackCalculator for QccsFeedbackCalculator<QCCSFeedbackModel> {
     }
 }
 
-fn awg_device_to_feedback_device(device: &AwgDevice) -> FeedbackDevice {
-    if device.is_shfqc() {
-        FeedbackDevice::Shfqc
+fn feedback_device(signal: &FeedbackSignal) -> Result<FeedbackDevice, Error> {
+    if signal.is_shfqc {
+        Ok(FeedbackDevice::Shfqc)
     } else {
-        match device.kind() {
-            DeviceKind::Shfqa => FeedbackDevice::Shfqa,
-            DeviceKind::Uhfqa => FeedbackDevice::Uhfqa,
-            DeviceKind::Hdawg => FeedbackDevice::Hdawg,
-            DeviceKind::Shfsg => FeedbackDevice::Shfsg,
-            _ => panic!("Unsupported device kind for feedback: {:?}", device.kind()),
+        match signal.device_kind {
+            DeviceKind::Shfqa => Ok(FeedbackDevice::Shfqa),
+            DeviceKind::Uhfqa => Ok(FeedbackDevice::Uhfqa),
+            DeviceKind::Hdawg => Ok(FeedbackDevice::Hdawg),
+            DeviceKind::Shfsg => Ok(FeedbackDevice::Shfsg),
+            _ => Err(Error::new(format!(
+                "Unsupported device '{}' for QCCS feedback latency calculation",
+                signal.device_kind
+            ))),
         }
     }
 }
@@ -490,9 +503,8 @@ fn awg_device_to_feedback_device(device: &AwgDevice) -> FeedbackDevice {
 mod tests {
     use super::*;
     use approx::abs_diff_eq;
-    use laboneq_common::{named_id::NamedId, types::PhysicalDeviceUid, types::SignalKind};
-    use laboneq_ir::signal::{Signal, builder::SignalBuilder};
-    use laboneq_ir::system::AwgDevice;
+    use laboneq_common::named_id::NamedId;
+    use laboneq_common::types::SignalKind;
 
     struct MockFeedbackModel {}
 
@@ -514,36 +526,30 @@ mod tests {
             _qa_device: &FeedbackDevice,
             _sg_device: &FeedbackDevice,
             _local_feedback: bool,
-        ) -> anyhow::Result<Samples> {
+        ) -> Result<Samples, Error> {
             Ok((_acquisition_end_samples / 8) as Samples)
         }
     }
 
-    fn create_signal_device(
+    fn create_signal(
         uid: u32,
         awg_uid: u64,
         signal_kind: SignalKind,
         device_kind: DeviceKind,
         signal_delay: f64,
         port_delay: f64,
-    ) -> (Signal, AwgDevice) {
-        let awg_key = AwgKey(awg_uid);
-        let device = AwgDevice::builder(0.into(), PhysicalDeviceUid(0), device_kind)
-            .shfqc(true)
-            .build();
-
-        let signal = SignalBuilder::new(
-            NamedId::debug_id(uid).into(),
-            2e9,
-            awg_key,
-            device.uid(),
-            signal_kind, // Replace `None` with the appropriate value if needed
-        )
-        .signal_delay(signal_delay)
-        .port_delay(ValueOrParameter::Value(seconds(port_delay)))
-        .start_delay(160.0 / 2e9)
-        .build();
-        (signal, device)
+    ) -> FeedbackSignal {
+        FeedbackSignal {
+            uid: NamedId::debug_id(uid).into(),
+            awg_key: AwgKey(awg_uid),
+            signal_kind,
+            device_kind,
+            is_shfqc: true,
+            sampling_rate: 2e9,
+            signal_delay: seconds(signal_delay),
+            port_delay: Some(ValueOrParameter::Value(seconds(port_delay))),
+            start_delay: seconds(160.0 / 2e9),
+        }
     }
 
     #[derive(Debug)]
@@ -640,7 +646,7 @@ mod tests {
         let acquisition_length = seconds(120e-9);
 
         for case in properties.iter() {
-            let (acq_signal, acq_device) = create_signal_device(
+            let acq_signal = create_signal(
                 0,
                 0,
                 SignalKind::Integration,
@@ -648,7 +654,7 @@ mod tests {
                 case.delay_signal_qa_acq - SHFQA_DEFAULT_INTEGRATION_DELAY,
                 case.port_delay_qa_acq,
             );
-            let (gen_signal, gen_device) = create_signal_device(
+            let gen_signal = create_signal(
                 1,
                 0,
                 SignalKind::Iq,
@@ -656,14 +662,12 @@ mod tests {
                 case.delay_signal_qa_meas,
                 case.port_delay_qa_meas,
             );
+            let acq_uid = acq_signal.uid;
+            let gen_uid = gen_signal.uid;
 
             let mock_model = MockFeedbackModel::new();
             let calculator = QccsFeedbackCalculator::new_with_model(
-                [
-                    SignalView::new(&acq_device, &acq_signal),
-                    SignalView::new(&gen_device, &gen_signal),
-                ]
-                .into_iter(),
+                [acq_signal, gen_signal].into_iter(),
                 mock_model,
             )
             .unwrap();
@@ -672,8 +676,8 @@ mod tests {
                 acquisition_absolute_start,
                 acquisition_length,
                 false,
-                acq_signal.uid,
-                &[gen_signal.uid],
+                acq_uid,
+                &[gen_uid],
             );
 
             let latency = result.unwrap();
@@ -723,7 +727,7 @@ mod tests {
         let acquisition_length = seconds(120e-9);
 
         for case in properties.iter() {
-            let (acq_signal, acq_device) = create_signal_device(
+            let acq_signal = create_signal(
                 0,
                 0,
                 SignalKind::Integration,
@@ -731,7 +735,7 @@ mod tests {
                 case.delay_signal_qa_acq - SHFQA_DEFAULT_INTEGRATION_DELAY,
                 case.port_delay_qa_acq,
             );
-            let (gen_signal, gen_device) = create_signal_device(
+            let gen_signal = create_signal(
                 1,
                 1,
                 SignalKind::Iq,
@@ -739,14 +743,12 @@ mod tests {
                 case.delay_signal_qa_meas,
                 case.port_delay_qa_meas,
             );
+            let acq_uid = acq_signal.uid;
+            let gen_uid = gen_signal.uid;
 
             let mock_model = MockFeedbackModel::new();
             let calculator = QccsFeedbackCalculator::new_with_model(
-                [
-                    SignalView::new(&acq_device, &acq_signal),
-                    SignalView::new(&gen_device, &gen_signal),
-                ]
-                .into_iter(),
+                [acq_signal, gen_signal].into_iter(),
                 mock_model,
             )
             .unwrap();
@@ -756,8 +758,8 @@ mod tests {
                     acquisition_absolute_start,
                     acquisition_length,
                     false,
-                    acq_signal.uid,
-                    &[gen_signal.uid],
+                    acq_uid,
+                    &[gen_uid],
                 )
                 .unwrap();
 

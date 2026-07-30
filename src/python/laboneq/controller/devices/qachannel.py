@@ -41,8 +41,8 @@ from laboneq.controller.recipe_processor import (
 from laboneq.controller.utilities.exception import LabOneQControllerException
 from laboneq.core.types.enums.acquisition_type import AcquisitionType, is_spectroscopy
 from laboneq.core.types.enums.averaging_mode import AveragingMode
-from laboneq.data.recipe import NtStepKey
-from laboneq.data.scheduled_experiment import ArtifactsCodegen
+from laboneq.data.artifacts_qccs import ArtifactsCodegen
+from laboneq.data.nt_step_key import NtStepKey
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -62,7 +62,11 @@ if TYPE_CHECKING:
         WaveformItem,
         Waveforms,
     )
-    from laboneq.data.recipe import IO, Initialization, IntegratorAllocation
+    from laboneq.data.artifacts_qccs import (
+        IO,
+        Initialization,
+        IntegratorAllocation,
+    )
     from laboneq.data.scheduled_experiment import ScheduledExperiment
 
 _logger = logging.getLogger(__name__)
@@ -99,7 +103,7 @@ def ch_uses_lrt(device_uid: str, channel: int, recipe_data: RecipeData) -> bool:
     artifacts = recipe_data.get_artifacts(ArtifactsCodegen)
     osc_signals = set(
         o.signal_id
-        for o in recipe_data.recipe.oscillator_params
+        for o in recipe_data.artifacts.oscillator_params
         if o.device_id == device_uid and o.channel == channel
     )
     return (
@@ -113,7 +117,7 @@ def ch_uses_lrt(device_uid: str, channel: int, recipe_data: RecipeData) -> bool:
 
 
 def ch_hw_modulated(device_uid: str, channel: int, recipe_data: RecipeData) -> bool:
-    for o in recipe_data.recipe.oscillator_params:
+    for o in recipe_data.artifacts.oscillator_params:
         if o.device_id == device_uid and o.channel == channel:
             return True
     return False
@@ -449,7 +453,7 @@ class QAChannel(SHFChannelBase):
                 if not uses_lrt:
                     for (
                         integrator_allocation
-                    ) in recipe_data.recipe.integrator_allocations:
+                    ) in recipe_data.artifacts.integrator_allocations:
                         if (
                             integrator_allocation.device_id != self._device_uid
                             or integrator_allocation.awg != self._core_index
@@ -502,7 +506,7 @@ class QAChannel(SHFChannelBase):
             rt_exec_step = next(
                 (
                     r
-                    for r in recipe_data.recipe.realtime_execution_init
+                    for r in recipe_data.artifacts.realtime_execution_init
                     if r.device_id == self._device_uid
                     and r.awg_index == self._core_index
                     and r.nt_step == effective_nt_step
@@ -572,7 +576,7 @@ class QAChannel(SHFChannelBase):
             self._configure_readout(
                 rt_execution_info.acquisition_type,
                 awg_config,
-                recipe_data.recipe.integrator_allocations,
+                recipe_data.artifacts.integrator_allocations,
                 rt_execution_info.effective_averages,
                 rt_execution_info.effective_averaging_mode,
                 recipe_data,
@@ -1200,9 +1204,7 @@ class SHFQAMixIn:
                 f"{self.dev_repr}: Experiment chunking in RAW acquisition mode is not supported by the device"
             )
 
-        initialization = get_initialization_by_device_uid(
-            scheduled_experiment.recipe, self.uid
-        )
+        initialization = get_initialization_by_device_uid(artifacts, self.uid)
         if initialization is not None:
             for output in initialization.outputs:
                 self._warn_for_unsupported_param(
@@ -1273,7 +1275,7 @@ class SHFQAMixIn:
                 )
 
     def _validate_recipe_data_shfqa(self, recipe_data: RecipeData):
-        for integrator_allocation in recipe_data.recipe.integrator_allocations:
+        for integrator_allocation in recipe_data.artifacts.integrator_allocations:
             num_states = integrator_allocation.kernel_count + 1
             num_thresholds = len(integrator_allocation.thresholds)
             num_expected_thresholds = (num_states - 1) * num_states // 2

@@ -53,6 +53,7 @@ use laboneq_dsl::types::{
     SectionAlignment, SectionTimingMode, SectionUid, SignalUid, SweepParameter, Trigger, Unit,
     ValueOrParameter,
 };
+use laboneq_py_utils::constant_serializer::{deserialize_json, is_json_prefixed};
 use laboneq_units::duration::seconds;
 use num_complex::Complex64;
 use numeric_array::NumericArray;
@@ -326,7 +327,7 @@ fn deserialize_constant_numeric(
             )))
         }
         Which::StringValue(_) => Err(Error::new("String values not supported as numeric")),
-        Which::PickledValue(_) | Which::RawBytesValue(_) => {
+        Which::PythonValue(_) | Which::RawBytesValue(_) => {
             Err(Error::new("Bytes values not supported as numeric"))
         }
     }
@@ -342,7 +343,7 @@ fn deserialize_constant(reader: &common_capnp::constant::Reader<'_>) -> Result<L
             Ok(Complex64::new(cv.get_real(), cv.get_imag()).into())
         }
         Which::StringValue(v) => Ok(text_to_str(v.map_err(Error::new)?)?.into()),
-        Which::PickledValue(_) | Which::RawBytesValue(_) => {
+        Which::PythonValue(_) | Which::RawBytesValue(_) => {
             Err(Error::new("Bytes values not supported"))
         }
     }
@@ -869,7 +870,7 @@ impl<'py> Deserializer<'py> {
                         root_child_index.section_uid_for_index(item_idx)?,
                         &root_child_index.sibling_refs,
                     )?;
-                    root.children.push(node.into());
+                    root.children.push(node);
                 }
                 Which::Operation(_) => {
                     return Err(Error::new(
@@ -991,12 +992,12 @@ impl<'py> Deserializer<'py> {
                         child_index.section_uid_for_index(item_idx)?,
                         &child_index.sibling_refs,
                     )?;
-                    children.push(child.into());
+                    children.push(child);
                 }
                 ItemWhich::Operation(op) => {
                     let op = op.map_err(Error::new)?;
                     let child = self.deserialize_operation(&op, name)?;
-                    children.push(child.into());
+                    children.push(child);
                 }
             }
         }
@@ -1595,9 +1596,7 @@ impl<'py> Deserializer<'py> {
     ) -> Result<ExternalOrValue> {
         use common_capnp::value::Which;
         match reader.which().map_err(Error::new)? {
-            Which::None(()) => Ok(ExternalOrValue::ValueOrParameter(ValueOrParameter::Value(
-                NumericLiteral::Float(0.0),
-            ))),
+            Which::None(()) => Ok(ExternalOrValue::None),
             Which::Constant(constant) => {
                 let constant = constant.map_err(Error::new)?;
                 use common_capnp::constant::Which as ConstantWhich;
@@ -1611,14 +1610,30 @@ impl<'py> Deserializer<'py> {
                             .or_insert_with(|| py_value.clone().unbind());
                         Ok(ExternalOrValue::ExternalParameter(external_uid))
                     }
-                    // Pickling is strictly a fallback for arbitrary Python objects passed
-                    // into custom functional pulse parameters (e.g., a SciPy interpolation
-                    // object) or to a custom user callback function.
-                    // Because the Rust compiler does not execute these (they are
-                    // evaluated in Python during waveform sampling or passed as they are into Controller), they must be passed
-                    // opaquely.
-                    ConstantWhich::PickledValue(data) => {
+                    // `pythonValue` is strictly a fallback for arbitrary Python objects passed
+                    // into custom functional pulse parameters or to a custom user callback function.
+                    // Because the Rust compiler does not execute
+                    // these (they are evaluated in Python during waveform sampling or
+                    // passed as they are into Controller), they must be passed opaquely.
+                    // This feature is deprecated and will be removed in a future release.
+                    // Users should serialize their own data to bytes and deserialize it inside their functional pulse parameter or callback function instead.
+                    ConstantWhich::PythonValue(data) => {
                         let data = data.map_err(Error::new)?;
+                        if is_json_prefixed(data) {
+                            // Structuring back into the original Python value is deferred to
+                            // `PyObjectInterner::resolve`.
+                            let key = uid_from_bytes(self.py, data)?;
+                            match self.external_parameter_values.entry(key) {
+                                std::collections::hash_map::Entry::Occupied(_) => {
+                                    // Already deserialized, nothing to do.
+                                }
+                                std::collections::hash_map::Entry::Vacant(entry) => {
+                                    let value = deserialize_json(self.py, data)?;
+                                    entry.insert(value.into());
+                                }
+                            }
+                            return Ok(ExternalOrValue::ExternalParameter(key));
+                        }
                         // Hash the raw pickled bytes directly — they came from
                         // `pickle.dumps` in the serializer, so re-pickling would
                         // be redundant.
@@ -1629,6 +1644,13 @@ impl<'py> Deserializer<'py> {
                             .import(pyo3::intern!(self.py, "pickle"))?
                             .getattr(pyo3::intern!(self.py, "loads"))?;
                         let py_value = loads.call1((py_bytes,))?;
+                        laboneq_py_utils::deprecation_warning!(
+                            self.py,
+                            "Unsupported type: '{}'. Unsupported types are deprecated for pulse parameters and callback function arguments and \
+                    will be removed in a future release. Serialize the value yourself (e.g. to bytes) and \
+                    deserialize it inside your functional pulse parameter or callback function instead.",
+                            format!("{}", py_value.get_type().name()?)
+                        )?;
                         self.external_parameter_values
                             .entry(external_uid)
                             .or_insert_with(|| py_value.clone().unbind());

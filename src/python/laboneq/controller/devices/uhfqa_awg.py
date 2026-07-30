@@ -29,7 +29,7 @@ from laboneq.controller.recipe_processor import (
 from laboneq.controller.utilities.exception import LabOneQControllerException
 from laboneq.core.types.enums.acquisition_type import AcquisitionType
 from laboneq.core.types.enums.averaging_mode import AveragingMode
-from laboneq.data.scheduled_experiment import ArtifactsCodegen
+from laboneq.data.artifacts_qccs import ArtifactsCodegen
 
 if TYPE_CHECKING:
     from laboneq.controller.attribute_value_tracker import DeviceAttributesView
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
         UHFQARecipeData,
     )
     from laboneq.core.types.numpy_support import NumPyArray
-    from laboneq.data.recipe import NtStepKey
+    from laboneq.data.nt_step_key import NtStepKey
 
 _logger = logging.getLogger(__name__)
 
@@ -205,7 +205,7 @@ class UHFQAAwg(CoreBase):
         nc = NodeCollector(base=f"/{self._serial}/")
 
         nc.add("qas/0/integration/mode", 0)
-        for integrator_allocation in recipe_data.recipe.integrator_allocations:
+        for integrator_allocation in recipe_data.artifacts.integrator_allocations:
             if integrator_allocation.device_id != device_uid:
                 continue
 
@@ -310,7 +310,7 @@ class UHFQAAwg(CoreBase):
         rt_exec_step = next(
             (
                 r
-                for r in recipe_data.recipe.realtime_execution_init
+                for r in recipe_data.artifacts.realtime_execution_init
                 if r.device_id == self._device_uid
                 and r.awg_index == 0
                 and r.nt_step == nt_step

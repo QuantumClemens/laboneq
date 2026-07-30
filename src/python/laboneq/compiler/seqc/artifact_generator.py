@@ -3,16 +3,13 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from laboneq._rust import codegenerator as codegen_rs
-from laboneq._version import get_version
 from laboneq.core.exceptions import LabOneQException
 from laboneq.core.types.enums.awg_signal_type import AWGSignalType
 from laboneq.core.types.enums.port_mode import PortMode
-from laboneq.data.calibration import CancellationSource
-from laboneq.data.recipe import (
+from laboneq.data.artifacts_qccs import (
     AWG,
     IO,
     AcquireLength,
@@ -21,20 +18,19 @@ from laboneq.data.recipe import (
     IntegratorAllocation,
     Measurement,
     OscillatorParam,
+    PPChannel,
     RealtimeExecutionInit,
-    Recipe,
     RoutedOutput,
 )
+from laboneq.data.calibration import CancellationSource
 
 if TYPE_CHECKING:
     from laboneq._rust import compiler as compiler_rs
     from laboneq._rust.codegenerator import ChannelProperties, FeedbackRegisterConfig
     from laboneq.compiler.common.integration_times import IntegrationTimes
     from laboneq.compiler.seqc.linker import CombinedRTOutputSeqC, NeartimeStep
+    from laboneq.data.artifacts_qccs import ArtifactsCodegen
     from laboneq.data.awg_info import AwgKey
-
-
-_logger = logging.getLogger(__name__)
 
 _PORT_MODE = {
     codegen_rs.PortMode.RF: PortMode.RF,
@@ -42,10 +38,13 @@ _PORT_MODE = {
 }
 
 
-class RecipeGenerator:
-    def __init__(self):
-        self._recipe = Recipe()
-        self._recipe.versions.laboneq = get_version()
+class ArtifactGenerator:
+    def __init__(self, artifacts: ArtifactsCodegen):
+        self._artifacts = artifacts
+
+    @property
+    def artifacts(self) -> ArtifactsCodegen:
+        return self._artifacts
 
     def add_oscillator_params(
         self,
@@ -67,13 +66,13 @@ class RecipeGenerator:
                         frequency=frequency,
                         param=param,
                     )
-                    self._recipe.oscillator_params.append(osc)
+                    self._artifacts.oscillator_params.append(osc)
 
     def add_integrator_allocations(self, integrator_allocation: IntegratorAllocation):
-        self._recipe.integrator_allocations.append(integrator_allocation)
+        self._artifacts.integrator_allocations.append(integrator_allocation)
 
     def add_acquire_lengths(self, integration_times: IntegrationTimes):
-        self._recipe.acquire_lengths.extend(
+        self._artifacts.acquire_lengths.extend(
             [
                 AcquireLength(
                     signal_id=signal_id,
@@ -85,7 +84,7 @@ class RecipeGenerator:
         )
 
     def find_initialization(self, device_uid) -> Initialization:
-        for initialization in self._recipe.initializations:
+        for initialization in self._artifacts.initializations:
             if initialization.device_uid == device_uid:
                 return initialization
         raise LabOneQException(
@@ -131,7 +130,7 @@ class RecipeGenerator:
         initialization.awgs.append(awg)
 
     def add_neartime_execution_step(self, nt_step: NeartimeStep):
-        self._recipe.realtime_execution_init.append(
+        self._artifacts.realtime_execution_init.append(
             RealtimeExecutionInit(
                 device_id=nt_step.device_id,
                 awg_index=nt_step.awg_id,
@@ -142,30 +141,23 @@ class RecipeGenerator:
             )
         )
 
-    def add_total_execution_time(self, total_execution_time):
-        self._recipe.total_execution_time = total_execution_time
-
-    def add_max_step_execution_time(self, max_step_execution_time):
-        self._recipe.max_step_execution_time = max_step_execution_time
-
     def add_measurements(self, measurements: dict[str, Measurement]):
-        for initialization in self._recipe.initializations:
+        for initialization in self._artifacts.initializations:
             device_uid = initialization.device_uid
             initialization.measurements = measurements.get(device_uid, [])
 
-    def recipe(self) -> Recipe:
-        for init in self._recipe.initializations:
+    def finalize(self) -> None:
+        for init in self._artifacts.initializations:
             init.outputs.sort(key=lambda o: o.channel)
             init.inputs.sort(key=lambda i: i.channel)
 
             init.outputs = list(self._remove_duplicate_channels(init.outputs))
             init.inputs = list(self._remove_duplicate_channels(init.inputs))
 
-        self._recipe.oscillator_params = sorted(
-            self._recipe.oscillator_params,
+        self._artifacts.oscillator_params = sorted(
+            self._artifacts.oscillator_params,
             key=lambda op: (op.channel, op.allocated_index),
         )
-        return self._recipe
 
     def _remove_duplicate_channels(self, ios: list[IO]) -> list[IO]:
         # TODO: Check for conflicting settings on duplicate channels
@@ -178,7 +170,7 @@ class RecipeGenerator:
 def calc_outputs(
     combined_compiler_output: CombinedRTOutputSeqC,
     experiment_rs: compiler_rs.ProcessedExperiment,
-    recipe_generator: RecipeGenerator,
+    generator: ArtifactGenerator,
 ):
     channels_flat = (
         (awg_key, ch_props)
@@ -228,12 +220,12 @@ def calc_outputs(
             else None,
         )
 
-        initialization = recipe_generator.find_initialization(awg_key.device_id)
+        initialization = generator.find_initialization(awg_key.device_id)
         initialization.outputs.append(output)
 
 
 def calc_inputs(
-    combined_compiler_output: CombinedRTOutputSeqC, recipe_generator: RecipeGenerator
+    combined_compiler_output: CombinedRTOutputSeqC, generator: ArtifactGenerator
 ):
     channels_flat = (
         (device_uid, ch_props)
@@ -255,53 +247,57 @@ def calc_inputs(
             scheduler_port_delay=scheduler_port_delay,
             port_mode=_PORT_MODE.get(channel_properties.port_mode),
         )
-        initialization = recipe_generator.find_initialization(awg_key.device_id)
+        initialization = generator.find_initialization(awg_key.device_id)
         initialization.inputs.append(input)
 
 
-def generate_recipe(
+def populate_codegen_artifacts(
     experiment_rs: compiler_rs.ProcessedExperiment,
     combined_compiler_output: CombinedRTOutputSeqC,
-) -> Recipe:
-    recipe_generator = RecipeGenerator()
+) -> ArtifactsCodegen:
+    artifacts = combined_compiler_output.get_artifacts()
+    generator = ArtifactGenerator(artifacts)
 
     for device in combined_compiler_output.device_properties:
         init = Initialization(device_uid=device.uid, device_type=device.device_type)
         init.config.sampling_rate = device.sampling_rate
         init.config.lead_delay = experiment_rs.device_lead_delay(device.uid)
-        recipe_generator.recipe().initializations.append(init)
+        generator.artifacts.initializations.append(init)
 
     for ppc_settings in combined_compiler_output.ppc_settings:
-        init = recipe_generator.find_initialization(ppc_settings.device)
-        settings = {
-            "channel": ppc_settings.channel,
-            "pump_on": ppc_settings.pump_on,
-            "cancellation_on": ppc_settings.cancellation_on,
-            "cancellation_source": CancellationSource[ppc_settings.cancellation_source],
-            "cancellation_source_frequency": ppc_settings.cancellation_source_frequency,
-            "alc_on": ppc_settings.alc_on,
-            "pump_filter_on": ppc_settings.pump_filter_on,
-            "probe_on": ppc_settings.probe_on,
-            "pump_frequency": ppc_settings.pump_frequency,
-            "pump_power": ppc_settings.pump_power,
-            "probe_frequency": ppc_settings.probe_frequency,
-            "probe_power": ppc_settings.probe_power,
-            "cancellation_phase": ppc_settings.cancellation_phase,
-            "cancellation_attenuation": ppc_settings.cancellation_attenuation,
-            "sweep_config": ppc_settings.sweep_config,
-        }
-        init.ppchannels.append(settings)
+        init = generator.find_initialization(ppc_settings.device)
+        init.ppchannels.append(
+            PPChannel(
+                channel=ppc_settings.channel,
+                pump_on=ppc_settings.pump_on,
+                cancellation_on=ppc_settings.cancellation_on,
+                cancellation_source=CancellationSource[
+                    ppc_settings.cancellation_source
+                ],
+                cancellation_source_frequency=ppc_settings.cancellation_source_frequency,
+                alc_on=ppc_settings.alc_on,
+                pump_filter_on=ppc_settings.pump_filter_on,
+                probe_on=ppc_settings.probe_on,
+                pump_frequency=ppc_settings.pump_frequency,
+                pump_power=ppc_settings.pump_power,
+                probe_frequency=ppc_settings.probe_frequency,
+                probe_power=ppc_settings.probe_power,
+                cancellation_phase=ppc_settings.cancellation_phase,
+                cancellation_attenuation=ppc_settings.cancellation_attenuation,
+                sweep_config=ppc_settings.sweep_config,
+            )
+        )
 
-    recipe_generator.add_oscillator_params(combined_compiler_output.channel_properties)
+    generator.add_oscillator_params(combined_compiler_output.channel_properties)
 
-    calc_outputs(combined_compiler_output, experiment_rs, recipe_generator)
-    calc_inputs(combined_compiler_output, recipe_generator)
+    calc_outputs(combined_compiler_output, experiment_rs, generator)
+    calc_inputs(combined_compiler_output, generator)
 
     for step in combined_compiler_output.neartime_steps:
-        recipe_generator.add_neartime_execution_step(step)
+        generator.add_neartime_execution_step(step)
     for awg_key, awg_properties in combined_compiler_output.awg_properties.items():
         channels = combined_compiler_output.channel_properties[awg_key]
-        recipe_generator.add_awg(
+        generator.add_awg(
             device_id=awg_key.device_id,
             awg_number=awg_key.awg_id,
             signal_type=AWGSignalType(awg_properties.signal_type.lower()),
@@ -325,9 +321,9 @@ def generate_recipe(
                 thresholds=alloc.thresholds,
                 kernel_count=alloc.kernel_count,
             )
-            recipe_generator.add_integrator_allocations(integrator_allocation)
+            generator.add_integrator_allocations(integrator_allocation)
 
-    recipe_generator.add_acquire_lengths(combined_compiler_output.integration_times)
+    generator.add_acquire_lengths(combined_compiler_output.integration_times)
     measurement_map_per_device: dict[str, list[Measurement]] = {}
     for meas in combined_compiler_output.measurements:
         measurement_map_per_device.setdefault(meas.device, []).append(
@@ -336,14 +332,7 @@ def generate_recipe(
                 channel=meas.channel,
             )
         )
-    recipe_generator.add_measurements(measurement_map_per_device)
+    generator.add_measurements(measurement_map_per_device)
 
-    recipe_generator.add_total_execution_time(
-        combined_compiler_output.total_execution_time
-    )
-    recipe_generator.add_max_step_execution_time(
-        combined_compiler_output.max_execution_time_per_step
-    )
-
-    _logger.debug("Recipe generation completed")
-    return recipe_generator.recipe()
+    generator.finalize()
+    return artifacts

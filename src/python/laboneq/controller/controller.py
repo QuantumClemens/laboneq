@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from laboneq.controller.utilities.sweep_params_tracker import SweepParamsTracker
     from laboneq.data.execution_payload import TargetSetup
     from laboneq.data.experiment_results import ExperimentResults
-    from laboneq.data.recipe import NtStepKey
+    from laboneq.data.nt_step_key import NtStepKey
     from laboneq.data.scheduled_experiment import (
         ScheduledExperiment,
     )
@@ -293,7 +293,7 @@ class Controller(EventLoopMixIn):
             execution_context.submission.results_builder.add_execution_error(
                 (
                     list(nt_step.indices),
-                    execution_context.recipe_data.rt_execution_info.uid,
+                    "real-time-loop",
                     "".join(traceback.format_exception(e)),
                 )
             )

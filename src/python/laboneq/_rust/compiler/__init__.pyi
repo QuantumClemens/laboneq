@@ -31,7 +31,6 @@ class ProcessedExperiment:
 class RtLoopProperties:
     """Properties of the real-time loop."""
 
-    uid: str
     acquisition_type: Literal[
         "INTEGRATION",
         "RAW",

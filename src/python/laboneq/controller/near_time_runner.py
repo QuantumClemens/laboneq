@@ -13,7 +13,7 @@ from laboneq.controller.toolkit_adapter import ToolkitDevices
 from laboneq.controller.utilities.exception import LabOneQControllerException
 from laboneq.controller.utilities.sweep_params_tracker import SweepParamsTracker
 from laboneq.core.exceptions import AbortExecution
-from laboneq.data.recipe import NtStepKey
+from laboneq.data.nt_step_key import NtStepKey
 from laboneq.executor.executor import AsyncExecutorBase, LoopingMode
 
 if TYPE_CHECKING:

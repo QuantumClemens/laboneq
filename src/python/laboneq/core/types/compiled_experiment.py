@@ -13,11 +13,8 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
     from laboneq.core.types.enums.wave_type import WaveType
-    from laboneq.data.recipe import Recipe
-    from laboneq.data.scheduled_experiment import (
-        CodegenWaveform,
-        ScheduledExperiment,
-    )
+    from laboneq.data.artifacts_qccs import CodegenWaveform
+    from laboneq.data.scheduled_experiment import Recipe, ScheduledExperiment
     from laboneq.dsl.device.device_setup import DeviceSetup
     from laboneq.dsl.experiment import Experiment
     from laboneq.dsl.experiment.pulse import Pulse
@@ -109,7 +106,7 @@ class CompiledExperiment:
         for each sequencer core.
 
         !!! version-changed "Deprecated in version 2.14.0"
-            For debugging, use `.scheduled_experiment.src` instead.
+            For debugging, use `.scheduled_experiment.artifacts.src` instead.
 
         Each element of the list is a dictionary with the keys:
 
@@ -118,7 +115,12 @@ class CompiledExperiment:
         - `text` ([str][]):
             The generated source.
         """
-        return self.scheduled_experiment.src
+        warnings.warn(
+            "CompiledExperiment.src is deprecated and will be removed in a future release.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return self.scheduled_experiment.artifacts.src
 
     @property
     def waves(self) -> dict[str, CodegenWaveform]:
@@ -126,7 +128,7 @@ class CompiledExperiment:
         Sequencer C programs.
 
         !!! version-changed "Deprecated in version 2.14.0"
-            For debugging, use `.scheduled_experiment.waves` instead.
+            For debugging, use `.scheduled_experiment.artifacts.waves` instead.
 
         Each element of the list is a dictionary with the keys:
 
@@ -136,7 +138,12 @@ class CompiledExperiment:
           A one dimensional numpy array containing the sample
           data which may be either [float][] or [complex][].
         """
-        return self.scheduled_experiment.waves
+        warnings.warn(
+            "CompiledExperiment.waves is deprecated and will be removed in a future release.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return self.scheduled_experiment.artifacts.waves
 
     @property
     def recipe(self) -> Recipe:
@@ -146,6 +153,11 @@ class CompiledExperiment:
         !!! version-changed "Deprecated in version 2.14.0"
             For debugging, use `.scheduled_experiment.recipe` instead.
         """
+        warnings.warn(
+            "CompiledExperiment.recipe is deprecated and will be removed in a future release.",
+            FutureWarning,
+            stacklevel=2,
+        )
         return self.scheduled_experiment.recipe
 
     @property
@@ -155,14 +167,14 @@ class CompiledExperiment:
         DISCLAIMER: This estimation does not include any overhead from network, IO,
         or python runtime.
         """
-        return self.scheduled_experiment.recipe.total_execution_time
+        return self.scheduled_experiment.total_execution_time
 
     @property
     def wave_indices(self) -> list[dict[str, str | tuple[int, WaveType]]] | None:
         """A list of which waves are used by each Sequence C program.
 
         !!! version-changed "Deprecated in version 2.14.0"
-            For debugging, use `.scheduled_experiment.wave_indices` instead.
+            For debugging, use `.scheduled_experiment.artifacts.wave_indices` instead.
 
         Each element of the list is a dictionary with the keys:
 
@@ -173,14 +185,19 @@ class CompiledExperiment:
           where `channel` is an integer specifying the channel to play
           the wave samples on and `type` specifies the type of the samples.
         """
-        return self.scheduled_experiment.wave_indices
+        warnings.warn(
+            "CompiledExperiment.wave_indices is deprecated and will be removed in a future release.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return self.scheduled_experiment.artifacts.wave_indices
 
     @property
     def command_tables(self) -> list[dict]:
         """A list of command tables used by Sequence C programs.
 
         !!! version-changed "Deprecated in version 2.14.0"
-            For debugging, use `.scheduled_experiment.command_tables`
+            For debugging, use `.scheduled_experiment.artifacts.command_tables`
             instead.
 
         Command table entries define custom real-time operations
@@ -196,7 +213,12 @@ class CompiledExperiment:
           is a dictionary. The contents of the dictionary
           are an internal implementation detail.
         """
-        return self.scheduled_experiment.command_tables
+        warnings.warn(
+            "CompiledExperiment.command_tables is deprecated and will be removed in a future release.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return self.scheduled_experiment.artifacts.command_tables
 
     @property
     def schedule(self) -> None:
@@ -209,6 +231,11 @@ class CompiledExperiment:
             version 2.14.0. For debugging, use
             `.scheduled_experiment` instead.
         """
+        warnings.warn(
+            "CompiledExperiment.schedule is deprecated and will be removed in a future release.",
+            FutureWarning,
+            stacklevel=2,
+        )
         return self.scheduled_experiment.schedule
 
     @property

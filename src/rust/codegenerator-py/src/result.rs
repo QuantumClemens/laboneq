@@ -986,7 +986,7 @@ fn waveform_to_py(
     buffer: &SampleBuffer,
 ) -> PyResult<Py<PyAny>> {
     let py_class = py
-        .import(intern!(py, "laboneq.data.scheduled_experiment"))?
+        .import(intern!(py, "laboneq.data.artifacts_qccs"))?
         .getattr(intern!(py, "CodegenWaveform"))?;
 
     let kwargs = PyDict::new(py);
@@ -1020,15 +1020,15 @@ fn pulse_map_to_py<'py>(
     py_object_store: &PyObjectInterner<ExternalParameterUid>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let pulse_map_entry_cls = py
-        .import(intern!(py, "laboneq.data.scheduled_experiment"))?
+        .import(intern!(py, "laboneq.data.artifacts_qccs"))?
         .getattr(intern!(py, "PulseMapEntry"))?;
 
     let pulse_waveform_map_cls = py
-        .import(intern!(py, "laboneq.data.scheduled_experiment"))?
+        .import(intern!(py, "laboneq.data.artifacts_qccs"))?
         .getattr(intern!(py, "PulseWaveformMap"))?;
 
     let pulse_instance_cls = py
-        .import(intern!(py, "laboneq.data.scheduled_experiment"))?
+        .import(intern!(py, "laboneq.data.artifacts_qccs"))?
         .getattr(intern!(py, "PulseInstance"))?;
 
     let dict = PyDict::new(py);

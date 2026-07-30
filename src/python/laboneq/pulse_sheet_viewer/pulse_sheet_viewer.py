@@ -35,7 +35,7 @@ def _get_html_template():
 def _fill_maybe_missing_information(
     compiled_experiment: CompiledExperiment, max_events_to_publish: int
 ) -> CompiledExperiment:
-    schedule = compiled_experiment.schedule
+    schedule = compiled_experiment.scheduled_experiment.schedule
     if (
         (schedule is None)
         or (len(schedule["event_list"]) < max_events_to_publish)

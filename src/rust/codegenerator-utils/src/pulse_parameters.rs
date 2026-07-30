@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::mem::discriminant;
 
 use laboneq_dsl::operation::ExternalOrValue;
 use laboneq_dsl::types::{PulseParameterUid, ValueOrParameter};
@@ -11,6 +12,7 @@ pub type PulseParametersId = u64;
 
 pub fn hash_pulse_parameter_value(value: &ExternalOrValue) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    discriminant(value).hash(&mut hasher);
     match value {
         ExternalOrValue::ExternalParameter(v) => v.hash(&mut hasher),
         ExternalOrValue::ValueOrParameter(c) => match c {
@@ -18,10 +20,16 @@ pub fn hash_pulse_parameter_value(value: &ExternalOrValue) -> u64 {
                 v.hash(&mut hasher);
             }
             ValueOrParameter::ResolvedParameter { value, .. } => {
+                // NOTE: For pulse parameter hashing, we only consider the value, not the uid,
+                // to ensure that two parameters with the same value but different uids hash to the same value.
                 value.hash(&mut hasher);
             }
-            ValueOrParameter::Parameter(uid) => uid.hash(&mut hasher),
+            ValueOrParameter::Parameter(uid) => {
+                discriminant(c).hash(&mut hasher);
+                uid.hash(&mut hasher);
+            }
         },
+        ExternalOrValue::None => {}
     }
     hasher.finish()
 }
@@ -79,7 +87,7 @@ impl PulseParameterDeduplicator {
         // Register if not seen before and check for hash collision
         if let Some(existing) = self.seen.get(&id) {
             assert_eq!(
-                &existing.pulse_parameters, pulse_parameters,
+                &existing.parameters, &merged,
                 "Internal error: Hash collision detected for pulse parameters."
             );
         } else {

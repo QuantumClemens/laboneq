@@ -6,6 +6,8 @@
 //! This module provides a function to initialize logging that bridges between Python and Rust,
 //! allowing Rust logs to be captured and displayed according to the log level and loggers set in Python.
 
+use std::ffi::CString;
+use std::fmt;
 use std::sync::LazyLock;
 
 use log::LevelFilter;
@@ -50,4 +52,39 @@ pub fn init_logging_py(log_level: i64) -> PyResult<()> {
     };
     log::set_max_level(level_filter);
     Ok(())
+}
+
+/// Issues a Python-visible `FutureWarning` and mirrors it to the Rust log,
+/// routed through `PyErr_WarnEx` so it respects the `warnings` module's
+/// filters (`-W` flags, `simplefilter("error")`, pytest capture, ...).
+///
+/// `FutureWarning` is used rather than `DeprecationWarning` because it isn't
+/// hidden by Python's default warning filters.
+///
+/// Takes [`fmt::Arguments`] (like `log::warn!`/`format!`) so callers can pass
+/// either a plain static message or a format string with arguments; prefer
+/// the [`deprecation_warning!`] macro over calling this directly.
+pub fn deprecation_warning(py: Python<'_>, message: fmt::Arguments<'_>) -> PyResult<()> {
+    log::warn!("Deprecation warning: {message}");
+    let message = CString::new(message.to_string())
+        .expect("deprecation warning message must not contain NUL bytes");
+    PyErr::warn(
+        py,
+        py.get_type::<pyo3::exceptions::PyFutureWarning>().as_any(),
+        &message,
+        2,
+    )
+}
+
+/// Emits a deprecation warning, formatting its arguments like `format!`.
+///
+/// ```ignore
+/// deprecation_warning!(py, "`foo` is deprecated")?;
+/// deprecation_warning!(py, "`{name}` is deprecated, use `{replacement}` instead")?;
+/// ```
+#[macro_export]
+macro_rules! deprecation_warning {
+    ($py:expr, $($arg:tt)*) => {
+        $crate::logging::deprecation_warning($py, format_args!($($arg)*))
+    };
 }

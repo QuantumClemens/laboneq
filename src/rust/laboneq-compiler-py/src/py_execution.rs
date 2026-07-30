@@ -112,6 +112,9 @@ impl<'py> PyStatementBuilder<'py, '_> {
                     };
                     dict.set_item(key, py_val)?;
                 }
+                ExternalOrValue::None => {
+                    dict.set_item(key, self.py.None())?;
+                }
             }
         }
 

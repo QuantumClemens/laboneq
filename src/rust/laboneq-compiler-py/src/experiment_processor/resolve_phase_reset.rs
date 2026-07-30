@@ -52,7 +52,7 @@ fn resolve_phase_reset_impl(
             }
             _ => {
                 this_signals.extend(child.kind.signals());
-                resolve_phase_reset_impl(child.make_mut(), &mut this_signals, signals)?;
+                resolve_phase_reset_impl(child, &mut this_signals, signals)?;
             }
         }
     }
@@ -63,7 +63,10 @@ fn resolve_phase_reset_impl(
             ));
         }
         for obj in to_fill {
-            let node = node.children[obj].make_mut();
+            let node = node
+                .children
+                .get_mut(obj)
+                .expect("Internal Error: Expected child node to be present");
             if let Operation::ResetOscillatorPhase(obj) = &mut node.kind {
                 obj.signals = this_signals.iter().cloned().collect();
                 obj.signals.sort();

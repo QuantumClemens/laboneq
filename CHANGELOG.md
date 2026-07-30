@@ -1,3 +1,15 @@
+# LabOne Q 26.7.0 (2026-07-30)
+
+## Bug Fixes
+
+- Fixed a bug where a `SweepParameter`/`LinearSweepParameter` arithmetic expression that re-used one of its own operands (e.g. `2 * param - param`) produced a corrupted parameter whose values could not be compiled, raising `TypeError: 'SweepParameter' object is not subscriptable`.
+- Fixed a bug where a compiler error occurred when sweeping a pulse parameter that overrides a value already defined on the pulse itself, and the pulse is used multiple times with different parameter values.
+- Fixed a bug where an experiment using SHFPPC failed to run after a JSON serialization round trip.
+
+## Deprecation Notices
+
+- Added runtime deprecation warnings for properties deprecated long ago: `CompiledExperiment.src`, `CompiledExperiment.waves`, `CompiledExperiment.recipe`, `CompiledExperiment.wave_indices`, `CompiledExperiment.command_tables`, `CompiledExperiment.schedule`.
+
 # LabOne Q 26.7.0b6 (2026-07-16)
 
 # LabOne Q 26.7.0b5 (2026-07-02)

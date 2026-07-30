@@ -34,10 +34,8 @@ if TYPE_CHECKING:
         WaveformItem,
     )
     from laboneq.core.types.enums.acquisition_type import AcquisitionType
-    from laboneq.data.recipe import (
-        Initialization,
-        NtStepKey,
-    )
+    from laboneq.data.artifacts_qccs import Initialization
+    from laboneq.data.nt_step_key import NtStepKey
     from laboneq.data.scheduled_experiment import ScheduledExperiment
 
 _logger = logging.getLogger(__name__)

@@ -147,7 +147,7 @@ where
                             AUTO_CHUNK_EXHAUSTED_MSG,
                         ));
                     }
-                    let multiplier = e.usage.ceil().max(2.0) as u32;
+                    let multiplier = e.usage.unwrap_or(2.0).ceil().max(2.0) as u32;
                     let new_requested = chunk_count.saturating_mul(multiplier);
                     auto_chunking = auto_chunking.resize(
                         new_requested
@@ -213,12 +213,11 @@ fn call_compile<'py>(
     match result {
         Ok(result) => Ok(result.extract()?),
         Err(e) if e.is_instance(py, &ResourceLimitationError::type_object(py)) => {
-            let usage: f64 = e
+            let usage = e
                 .value(py)
                 .getattr(intern!(py, "usage"))
                 .ok()
-                .and_then(|v: Bound<'_, PyAny>| v.extract().ok())
-                .expect("ResourceLimitationError without usage information");
+                .and_then(|v: Bound<'_, PyAny>| v.extract().ok());
             bail_resource_usage!("{}", e.to_string(), usage = usage);
         }
         Err(e) => {
@@ -245,12 +244,14 @@ fn call_compile<'py>(
 /// The output of the Python function `compile_whole_or_with_chunks`.
 #[derive(FromPyObject, Debug)]
 struct CompilationOutputPy<'py> {
-    recipe: Bound<'py, PyAny>,
     artifacts: Bound<'py, PyAny>,
     schedule: Option<Bound<'py, PyAny>>,
     execution: Bound<'py, PyAny>,
     rt_loop_properties: Bound<'py, PyAny>,
     result_shape_info: Bound<'py, PyAny>,
+    total_execution_time: Bound<'py, PyAny>,
+    max_step_execution_time: Bound<'py, PyAny>,
+    versions: Bound<'py, PyAny>,
 }
 
 /// Builds the `ScheduledExperiment` Python object.
@@ -268,7 +269,6 @@ fn build_scheduled_experiment_py<'py>(
         intern!(py, "device_setup_fingerprint"),
         device_setup_fingerprint,
     )?;
-    kwargs.set_item(intern!(py, "recipe"), compilation_output.recipe)?;
     kwargs.set_item(intern!(py, "artifacts"), compilation_output.artifacts)?;
     kwargs.set_item(intern!(py, "schedule"), compilation_output.schedule)?;
     kwargs.set_item(intern!(py, "execution"), compilation_output.execution)?;
@@ -280,6 +280,15 @@ fn build_scheduled_experiment_py<'py>(
         intern!(py, "result_shape_info"),
         compilation_output.result_shape_info,
     )?;
+    kwargs.set_item(
+        intern!(py, "total_execution_time"),
+        compilation_output.total_execution_time,
+    )?;
+    kwargs.set_item(
+        intern!(py, "max_step_execution_time"),
+        compilation_output.max_step_execution_time,
+    )?;
+    kwargs.set_item(intern!(py, "versions"), compilation_output.versions)?;
     let scheduled_experiment = scheduled_experiment_class.call((), Some(&kwargs))?;
     Ok(scheduled_experiment)
 }

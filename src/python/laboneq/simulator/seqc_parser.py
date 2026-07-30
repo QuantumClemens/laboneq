@@ -8,7 +8,6 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from functools import lru_cache
-from types import SimpleNamespace
 
 # Note: The simulator may be used as a testing tool, so it must be independent of the production code
 # Do not add dependencies to the code being tested here (such as compiler, DSL asf.)
@@ -33,7 +32,7 @@ from pycparser.c_parser import CParser
 from laboneq.compiler.common.compiler_settings import EXECUTETABLEENTRY_LATENCY
 from laboneq.core.types.enums.wave_type import WaveType
 from laboneq.core.utilities.prng import PRNG
-from laboneq.data.scheduled_experiment import ArtifactsCodegen
+from laboneq.data.artifacts_qccs import ArtifactsCodegen
 
 if TYPE_CHECKING:
     from numpy import typing as npt
@@ -42,7 +41,7 @@ if TYPE_CHECKING:
     )
 
     from laboneq.core.types.compiled_experiment import CompiledExperiment
-    from laboneq.data.recipe import Recipe, RoutedOutput
+    from laboneq.data.artifacts_qccs import RoutedOutput
 
 
 def precompensation_is_nonzero(precompensation):
@@ -1033,18 +1032,15 @@ class SimpleRuntime:
         pass
 
 
-def analyze_recipe(
-    recipe: Recipe,
-    sources,
-    wave_indices: list[dict[str, str | tuple[int, WaveType]]] | None,
-    command_tables,
+def analyze_artifacts(
+    artifacts: ArtifactsCodegen,
 ) -> list[SeqCDescriptor]:
     outputs: dict[str, list[int]] = {}
-    seqc_descriptors_from_recipe: dict[str, SeqCDescriptor] = {}
+    seqc_descriptors_from_artifacts: dict[str, SeqCDescriptor] = {}
 
-    src_fname_to_text = {source["filename"]: source["text"] for source in sources}
+    src_fname_to_text = {source["filename"]: source["text"] for source in artifacts.src}
 
-    for init in recipe.initializations:
+    for init in artifacts.initializations:
         device_uid = init.device_uid
         device_type = init.device_type
         sample_multiple = get_sample_multiple(device_type)
@@ -1079,7 +1075,7 @@ def analyze_recipe(
             awg_nr = awg.awg
             rt_exec_step = next(
                 r
-                for r in recipe.realtime_execution_init
+                for r in artifacts.realtime_execution_init
                 if r.device_id == device_uid and r.awg_index == awg_nr
             )
             seqc = rt_exec_step.program_ref
@@ -1090,7 +1086,7 @@ def analyze_recipe(
                 input_channel = 2 * awg_nr
                 output_channels = [2 * awg_nr, 2 * awg_nr + 1]
 
-            seqc_descriptors_from_recipe[seqc] = SeqCDescriptor(
+            seqc_descriptors_from_artifacts[seqc] = SeqCDescriptor(
                 name=seqc,
                 device_uid=device_uid,
                 device_type=device_type,
@@ -1112,14 +1108,14 @@ def analyze_recipe(
                 precompensation_delay = (
                     precompensation_delay_samples(precompensation_info) / sampling_rate
                 )
-                seqc_descriptors_from_recipe[
+                seqc_descriptors_from_artifacts[
                     seqc
                 ].output_port_delay += precompensation_delay
             delay_by_output_router = output_channel_output_router_delays.get(
                 output_channels[0]
             )
             if delay_by_output_router is not None:
-                seqc_descriptors_from_recipe[seqc].output_port_delay += (
+                seqc_descriptors_from_artifacts[seqc].output_port_delay += (
                     delay_by_output_router / sampling_rate
                 )
             channels: list[int] = [
@@ -1134,7 +1130,7 @@ def analyze_recipe(
             awg_index += 1
 
     seq_c_wave_indices: dict[str, dict[str, dict[str, Any]]] = {}
-    for wave_index in wave_indices or []:
+    for wave_index in artifacts.wave_indices or []:
         wave_seq_c_filename = wave_index["filename"]
         values = cast("dict[int, tuple[str, WaveType]]", wave_index["value"])
         if len(values) > 0:
@@ -1146,12 +1142,16 @@ def analyze_recipe(
                 }
 
     seqc_descriptors = []
-    for name, seqc_descriptor in seqc_descriptors_from_recipe.items():
+    for name, seqc_descriptor in seqc_descriptors_from_artifacts.items():
         command_table = next(
-            (table["ct"]["table"] for table in command_tables if table["seqc"] == name),
+            (
+                table["ct"]["table"]
+                for table in artifacts.command_tables
+                if table["seqc"] == name
+            ),
             {},
         )
-        seqc_descriptor = seqc_descriptors_from_recipe[name]
+        seqc_descriptor = seqc_descriptors_from_artifacts[name]
         seqc_descriptor.source = src_fname_to_text[name]
         seqc_descriptor.channels = outputs[name]
         seqc_descriptor.wave_index = seq_c_wave_indices.get(name, {})
@@ -1253,24 +1253,10 @@ def _expand_compressed_wave(
 def _analyze_compiled(
     compiled: CompiledExperiment,
 ) -> tuple[list[SeqCDescriptor], dict[str, npt.ArrayLike]]:
-    if isinstance(compiled, dict):
-        compiled = SimpleNamespace(
-            scheduled_experiment=SimpleNamespace(
-                recipe=compiled["recipe"],
-                src=compiled["src"],
-                waves=compiled["waves"],
-                wave_indices=compiled["wave_indices"],
-            )
-        )
-
-    recipe = compiled.scheduled_experiment.recipe
     artifacts = compiled.scheduled_experiment.artifacts
-    assert recipe is not None
     assert isinstance(artifacts, ArtifactsCodegen)
 
-    seqc_descriptors = analyze_recipe(
-        recipe, artifacts.src, artifacts.wave_indices, artifacts.command_tables
-    )
+    seqc_descriptors = analyze_artifacts(artifacts)
 
     waves: dict[str, npt.ArrayLike] = {}
     for n, w in artifacts.waves.items():

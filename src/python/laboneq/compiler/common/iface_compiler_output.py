@@ -8,8 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from laboneq.data.recipe import NtStepKey
-    from laboneq.data.scheduled_experiment import CompilerArtifact
+    from laboneq.data.nt_step_key import NtStepKey
 
 
 class NeartimeStepBase:
@@ -44,9 +43,15 @@ class CombinedOutput(abc.ABC):
 
     neartime_steps: list[NeartimeStepBase]
 
+    @staticmethod
     @abc.abstractmethod
-    def get_artifacts(self) -> CompilerArtifact:
-        raise NotImplementedError
+    def _total_execution_time(self) -> float:
+        """Total duration of the real-time steps, in seconds."""
+
+    @staticmethod
+    @abc.abstractmethod
+    def _max_execution_time_per_step(self) -> float:
+        """Maximum duration of a single real-time step, in seconds."""
 
     @abc.abstractmethod
     def get_raw_acquire_length(self, signal_id: str, handle: str) -> int: ...

@@ -15,11 +15,11 @@ if TYPE_CHECKING:
     from laboneq.compiler.common.iface_compiler_output import CombinedOutput
     from laboneq.compiler.common.iface_linker import ILinker
     from laboneq.data.compilation_job import DeviceInfo, ExperimentInfo
-    from laboneq.data.recipe import Recipe
+    from laboneq.data.scheduled_experiment import CompilerArtifact
 
 
 @dataclass
-class GenerateRecipeArgs:
+class CompiledOutputParams:
     experiment_rs: compiler_rs.ProcessedExperiment
     combined_compiler_output: CombinedOutput
 
@@ -44,7 +44,8 @@ class CompilerHooks(ABC):
 
     @staticmethod
     @abstractmethod
-    def generate_recipe(args: GenerateRecipeArgs) -> Recipe: ...
+    def compiled_output(args: CompiledOutputParams) -> CompilerArtifact:
+        """Generate the backend-specific compiler artifacts from the combined compiler output."""
 
     @staticmethod
     @abstractmethod
@@ -107,12 +108,10 @@ class CompilerHooksSeqC(CompilerHooks):
         return SeqCLinker
 
     @staticmethod
-    def generate_recipe(args: GenerateRecipeArgs) -> Recipe:
-        from laboneq.compiler.seqc.linker import CombinedRTOutputSeqC
-        from laboneq.compiler.seqc.recipe_generator import generate_recipe
+    def compiled_output(args: CompiledOutputParams) -> CompilerArtifact:
+        from laboneq.compiler.seqc.artifact_generator import populate_codegen_artifacts
 
-        assert isinstance(args.combined_compiler_output, CombinedRTOutputSeqC)
-        return generate_recipe(
+        return populate_codegen_artifacts(
             args.experiment_rs,
             args.combined_compiler_output,
         )

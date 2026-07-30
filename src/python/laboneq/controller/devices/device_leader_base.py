@@ -23,7 +23,7 @@ if TYPE_CHECKING:
         NodeControlBase,
     )
     from laboneq.controller.recipe_processor import RecipeData
-    from laboneq.data.recipe import NtStepKey
+    from laboneq.data.nt_step_key import NtStepKey
 
 _logger = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ class DeviceLeaderBase(DeviceBase):
 
     async def configure_feedback(self, recipe_data: RecipeData):
         nc = NodeCollector(base=f"/{self.serial}/")
-        min_wait_time = recipe_data.recipe.max_step_execution_time
+        min_wait_time = recipe_data.max_step_execution_time
         # This is required because PQSC/QHUB is only receiving the feedback events
         # during the holdoff time, even for a single trigger.
         nc.add("execution/holdoff", min_wait_time)

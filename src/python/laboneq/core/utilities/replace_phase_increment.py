@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from laboneq.core.exceptions import LabOneQException
-from laboneq.data.scheduled_experiment import (
+from laboneq.data.artifacts_qccs import (
     COMPLEX_USAGE,
     ArtifactsCodegen,
     CommandTableMapEntry,

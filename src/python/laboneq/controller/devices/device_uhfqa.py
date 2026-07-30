@@ -45,7 +45,7 @@ if TYPE_CHECKING:
         RecipeData,
         RtExecutionInfo,
     )
-    from laboneq.data.recipe import IO
+    from laboneq.data.artifacts_qccs import IO
     from laboneq.data.scheduled_experiment import ScheduledExperiment
 
 _logger = logging.getLogger(__name__)
@@ -112,9 +112,8 @@ class DeviceUHFQA(DeviceBase):
         scheduled_experiment: ScheduledExperiment,
         rt_execution_info: RtExecutionInfo,
     ):
-        initialization = get_initialization_by_device_uid(
-            scheduled_experiment.recipe, self.uid
-        )
+        artifacts = scheduled_experiment.artifacts
+        initialization = get_initialization_by_device_uid(artifacts, self.uid)
         if initialization is None:
             return
 
@@ -146,11 +145,9 @@ class DeviceUHFQA(DeviceBase):
 
         # Validate average count
         # TODO(2K): Calculation of this_device_has_acquires duplicates the logic in
-        # _validate_scheduled_experiment + _calculate_awg_configs. Cleanup after improving recipe.
-        recipe = scheduled_experiment.recipe
-        assert recipe is not None
+        # _validate_scheduled_experiment + _calculate_awg_configs. Cleanup after improving artifacts.
         this_device_has_acquires = any(
-            init for init in recipe.initializations if len(init.measurements) > 0
+            init for init in artifacts.initializations if len(init.measurements) > 0
         )
         averages = rt_execution_info.effective_averages
         if (

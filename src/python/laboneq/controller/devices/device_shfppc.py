@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import fields as dataclass_fields
 from typing import TYPE_CHECKING, Iterator
 
 from laboneq.controller.attribute_value_tracker import (
@@ -22,7 +23,8 @@ if TYPE_CHECKING:
     )
     from laboneq.controller.devices.core_base import CoreBase
     from laboneq.controller.recipe_processor import DeviceRecipeData, RecipeData
-    from laboneq.data.recipe import Initialization
+    from laboneq.data.artifacts_qccs import Initialization
+    from laboneq.data.artifacts_qccs import PPChannel as PPChannelSettings
 
 
 class DeviceSHFPPC(DeviceBase):
@@ -101,12 +103,12 @@ class DeviceSHFPPC(DeviceBase):
         yield from super().pre_process_attributes(initialization)
         ppchannels = initialization.ppchannels or []
         for settings in ppchannels:
-            channel = settings["channel"]
             for key, attribute_name in DeviceSHFPPC.attribute_keys.items():
-                if key in settings:
-                    yield DeviceAttribute(
-                        name=attribute_name, index=channel, value_or_param=settings[key]
-                    )
+                yield DeviceAttribute(
+                    name=attribute_name,
+                    index=settings.channel,
+                    value_or_param=getattr(settings, key),
+                )
 
     async def reset_to_idle(self):
         await super().reset_to_idle()
@@ -127,14 +129,17 @@ class DeviceSHFPPC(DeviceBase):
 
         self._allocated_sweepers.clear()
         for ch, ppchannel in device_recipe_data.ppchannels.items():
-            for key, value in ppchannel.settings.items():
+            settings: PPChannelSettings = ppchannel.settings
+            for f in dataclass_fields(settings):
+                key = f.name
+                value = getattr(settings, key)
                 if key == "channel":
                     continue
                 if key == "probe_on" and value:
                     probe_channel = device_recipe_data.ppchannels.get(
                         probe_synth_channel[ch]
                     )
-                    if probe_channel is not None and probe_channel.settings["pump_on"]:
+                    if probe_channel is not None and probe_channel.settings.pump_on:
                         raise LabOneQControllerException(
                             f"{self.dev_repr}: cannot use probe tone on"
                             f" channel {ch} while the pump tone generation is also"
@@ -146,10 +151,7 @@ class DeviceSHFPPC(DeviceBase):
                     else:
                         assert value == CancellationSource.EXTERNAL
                         value = 1
-                        if (
-                            ppchannel.settings.get("cancellation_source_frequency")
-                            is None
-                        ):
+                        if settings.cancellation_source_frequency is None:
                             raise LabOneQControllerException(
                                 f"{self.dev_repr}: Using the external"
                                 f" cancellation source requires specifying the"

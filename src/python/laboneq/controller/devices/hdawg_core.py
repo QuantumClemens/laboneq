@@ -26,8 +26,8 @@ from laboneq.controller.recipe_processor import (
     prepare_waves,
 )
 from laboneq.controller.utilities.exception import LabOneQControllerException
-from laboneq.data.recipe import NtStepKey
-from laboneq.data.scheduled_experiment import ArtifactsCodegen
+from laboneq.data.artifacts_qccs import ArtifactsCodegen
+from laboneq.data.nt_step_key import NtStepKey
 
 if TYPE_CHECKING:
     from laboneq.controller.attribute_value_tracker import (
@@ -352,7 +352,7 @@ class HDAwgCore(CoreBase):
             rt_exec_step = next(
                 (
                     r
-                    for r in recipe_data.recipe.realtime_execution_init
+                    for r in recipe_data.artifacts.realtime_execution_init
                     if r.device_id == self._device_uid
                     and r.awg_index == self._core_index
                     and r.nt_step == effective_nt_step

@@ -3,6 +3,7 @@
 
 //! This crate provides Python utilities for LabOneQ.
 
+pub mod constant_serializer;
 pub mod device_setup_fingerprint;
 pub mod logging;
 pub mod py_export;

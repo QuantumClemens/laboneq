@@ -83,12 +83,7 @@ fn chunk_experiment_impl(
         }
     }
     for child in ir.children.iter_mut() {
-        chunk_experiment_impl(
-            child.make_mut(),
-            parameters,
-            chunking_info,
-            chunk_bound_parameters,
-        )?;
+        chunk_experiment_impl(child, parameters, chunking_info, chunk_bound_parameters)?;
     }
     Ok(())
 }

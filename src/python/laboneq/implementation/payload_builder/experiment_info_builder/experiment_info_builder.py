@@ -34,6 +34,7 @@ from laboneq.implementation.legacy_adapters.utils import parse_logical_signal
 
 if TYPE_CHECKING:
     from laboneq.data.setup_description import (
+        Instrument,
         LogicalSignal,
         PhysicalChannel,
         Setup,
@@ -77,6 +78,11 @@ class ExperimentInfoBuilder:
         }
         self._logical_to_physical: dict[LogicalSignal, PhysicalChannel] = {
             conn.logical_signal: conn.physical_channel
+            for device in self._device_setup.instruments
+            for conn in device.connections
+        }
+        self._logical_to_instrument: dict[LogicalSignal, Instrument] = {
+            conn.logical_signal: device
             for device in self._device_setup.instruments
             for conn in device.connections
         }
@@ -249,6 +255,14 @@ class ExperimentInfoBuilder:
     def _load_signal(self, signal: ExperimentSignal) -> ExperimentSignalInfo:
         mapped_ls = self._signal_mappings[signal.uid]
         calibration = self._get_signal_calibration(signal, mapped_ls)
+        if calibration.port_delay is not None:
+            instrument = self._logical_to_instrument[mapped_ls]
+            if instrument.device_type == DeviceType.ZQCS:
+                raise LabOneQException(
+                    f" Signal '{signal.uid}' sets 'port_delay', but "
+                    f"'port_delay' is not supported on ZQCS."
+                    f" Either use 'delay_signal', or use 'delay()' command instead."
+                )
         return ExperimentSignalInfo(uid=signal.uid, calibration=calibration)
 
     def _sanitize_amplifier_pump_calibration(

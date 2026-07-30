@@ -357,15 +357,15 @@ Context:
     #[test]
     fn test_bail_resource_usage() {
         fn bail_basic() -> Result<(), LabOneQError> {
-            bail_resource_usage!("foo bar", usage = 1.3);
+            bail_resource_usage!("foo bar", usage = Some(1.3));
         }
 
         fn bail_formatted_1() -> Result<(), LabOneQError> {
-            bail_resource_usage!("{} {}", "foo", "bar", usage = 1.2);
+            bail_resource_usage!("{} {}", "foo", "bar", usage = Some(1.2));
         }
 
         fn bail_formatted_2() -> Result<(), LabOneQError> {
-            bail_resource_usage!("{foo} {bar}", foo = "foo", bar = "bar", usage = 1.1);
+            bail_resource_usage!("{foo} {bar}", foo = "foo", bar = "bar", usage = Some(1.1));
         }
 
         for func in [bail_basic, bail_formatted_1, bail_formatted_2] {

@@ -36,7 +36,10 @@ from laboneq.controller.recipe_processor import (
 from laboneq.controller.utilities.exception import LabOneQControllerException
 from laboneq.controller.utilities.for_each import for_each, for_each_sync
 from laboneq.core.types.enums.acquisition_type import AcquisitionType
-from laboneq.data.scheduled_experiment import ArtifactsCodegen, ResultSource
+from laboneq.data.artifacts_qccs import (
+    ArtifactsCodegen,
+    ResultSource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -64,7 +67,8 @@ if TYPE_CHECKING:
     from laboneq.controller.results import ResultsBuilder
     from laboneq.controller.versioning import SetupCaps
     from laboneq.core.types.numpy_support import NumPyArray
-    from laboneq.data.recipe import Initialization, NtStepKey
+    from laboneq.data.artifacts_qccs import Initialization
+    from laboneq.data.nt_step_key import NtStepKey
     from laboneq.data.scheduled_experiment import ScheduledExperiment
     from laboneq.data.setup_descriptions import SetupDescription
 
@@ -958,7 +962,7 @@ class DeviceBase(DeviceZI):
             integrator_allocation = next(
                 (
                     i
-                    for i in recipe_data.recipe.integrator_allocations
+                    for i in recipe_data.artifacts.integrator_allocations
                     if i.signal_id == signal
                 ),
                 None,

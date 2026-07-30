@@ -239,6 +239,8 @@ def _unstructure_pulse_parameter_model(obj):
 
 
 def _unstructure_pulse_parameter_value(value):
+    if isinstance(value, PulseParameterValueBasicTypes):
+        return value
     if isinstance(value, list):
         return [_unstructure_pulse_parameter_value(item) for item in value]
     if isinstance(value, dict):
@@ -249,8 +251,6 @@ def _unstructure_pulse_parameter_value(value):
             PulseParameterValueModels,
             _converter,
         )
-    if isinstance(value, PulseParameterValueBasicTypes):
-        return value
     raise ValueError(
         f"Pulse parameters with type {type(value).__name__} are not supported: {value!r}"
     )
@@ -261,18 +261,18 @@ def _structure_pulse_parameter_model(obj):
 
 
 def _structure_pulse_parameter_value(value):
-    if isinstance(value, list):
-        return [_structure_pulse_parameter_value(item) for item in value]
+    if isinstance(value, PulseParameterValueBasicTypes):
+        return value
     if isinstance(value, dict) and "_type" in value:
         return structure_union_generic_type(
             value,
             PulseParameterValueModels,
             _converter,
         )
+    if isinstance(value, list):
+        return [_structure_pulse_parameter_value(item) for item in value]
     if isinstance(value, dict):
         return {k: _structure_pulse_parameter_value(v) for k, v in value.items()}
-    if isinstance(value, PulseParameterValueBasicTypes):
-        return value
     raise ValueError(
         f"Pulse parameters with type {type(value).__name__} are not supported: {value!r}"
     )
