@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::error::{Error, Result};
 use crate::signal_info::SignalInfo;
 use laboneq_common::named_id::{NamedId, NamedIdStore};
-use laboneq_dsl::types::{HandleUid, ParameterUid, SignalUid, SweepParameter};
+use laboneq_dsl::types::{ParameterUid, SignalUid, SweepParameter};
 
 /// Experiment context.
 ///
@@ -16,7 +16,6 @@ pub struct ExperimentContext<'a, T: SignalInfo> {
     pub id_store: &'a NamedIdStore,
     pub parameters: HashMap<ParameterUid, SweepParameter>,
     pub signals: &'a HashMap<SignalUid, T>,
-    pub handle_to_signal: &'a HashMap<HandleUid, SignalUid>,
 }
 
 impl<T: SignalInfo> ExperimentContext<'_, T> {

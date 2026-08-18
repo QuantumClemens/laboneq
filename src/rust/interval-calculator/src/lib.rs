@@ -10,7 +10,10 @@ use crate::interval::{Interval, OrderedRange};
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("{0}")]
-    MinimumWaveformLengthViolation(String),
+    MinimumWaveformLengthViolation(&'static str),
+
+    #[error("{0}")]
+    IntervalOverlapsCutPoint(&'static str),
 
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
@@ -237,7 +240,9 @@ pub fn calculate_intervals(
         while let Some(front) = interval_deque.front() {
             if cut_interval.overlaps_range(front.start(), front.end()) {
                 if front.start() < cut_interval.0.start || cut_interval.0.end < front.end() {
-                    return Err(anyhow::anyhow!("Cut points overlap intervals").into());
+                    return Err(Error::IntervalOverlapsCutPoint(
+                        "Cut points overlap intervals",
+                    ));
                 };
                 chunk.push(interval_deque.pop_front().unwrap());
             } else {
@@ -249,7 +254,7 @@ pub fn calculate_intervals(
         }
         if cut_interval.length() < min_play_wave {
             return Err(Error::MinimumWaveformLengthViolation(
-                "Cut points are spaced more closely than the minimum waveform length".to_string(),
+                "Cut points are spaced more closely than the minimum waveform length",
             ));
         }
         let mpw = match ct_intervals {

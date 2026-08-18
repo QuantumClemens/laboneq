@@ -24,6 +24,9 @@ from .section import AcquireLoopRt, Case, Match, Section, Sweep
 if TYPE_CHECKING:
     from laboneq.core.types.enums.section_timing_mode import SectionTimingMode
     from laboneq.dsl.calibration.calibration import Calibration
+    from laboneq.dsl.coprocessor.coprocessor import Coprocessor
+    from laboneq.dsl.coprocessor.inventory import CoprocessorInventoryEntry
+    from laboneq.dsl.coprocessor.stream import _Stream
     from laboneq.dsl.device.io_units.logical_signal import LogicalSignalRef
     from laboneq.dsl.enums import (
         SectionAlignment,
@@ -109,6 +112,12 @@ class Experiment:
     version: DSLVersion = attrs.field(default=DSLVersion.V3_0_0)
     epsilon: float = attrs.field(default=0.0)
     sections: list[Section] = attrs.field(factory=list)
+
+    coprocessors: dict[str, Coprocessor] = attrs.field(factory=dict)
+    coprocessor_mappings: dict[str, str | CoprocessorInventoryEntry] = attrs.field(
+        factory=dict
+    )
+    streams: list[_Stream] = attrs.field(factory=list)
 
     _section_stack: deque[Section] = attrs.field(
         factory=deque, repr=False, order=False, init=False
@@ -202,6 +211,21 @@ class Experiment:
             )
 
         self.signals[experiment_signal_uid].map(logical_signal)
+
+    def map_coprocessor(
+        self,
+        experiment_coprocessor: str | Coprocessor,
+        setup_coprocessor: str | CoprocessorInventoryEntry,
+    ) -> None:
+        """Map a coprocessor handle to an inventory entry (or instance).
+
+        May be called multiple times; last call wins.
+        """
+        from laboneq.dsl.coprocessor.coprocessor import Coprocessor
+
+        if isinstance(experiment_coprocessor, Coprocessor):
+            experiment_coprocessor = experiment_coprocessor.label
+        self.coprocessor_mappings[experiment_coprocessor] = setup_coprocessor
 
     def reset_signal_map(self, signal_map: dict[str, LogicalSignalRef] | None = None):
         """Reset, i.e. disconnect, all defined signal connections and
@@ -442,8 +466,13 @@ class Experiment:
                 - dictionaries of the above with `str` keys
 
             The lists and dictionaries may be nested and need not have homogeneous value types.
+            A `laboneq.dsl.Parameter`, however, must be the pulse parameter value itself: nested
+            inside a list or dictionary it is not resolved, and reaches the pulse sampler as the
+            `Parameter` object instead of the value of the current sweep step.
 
-            Other value types are not supported by the LabOne Q serializer.
+            Other value types are not supported by the LabOne Q serializer. To pass a value of
+            another type, convert it to a supported one (numpy arrays: `.tolist()`), or serialize
+            it to `bytes` and deserialize it inside the pulse sampler.
 
         !!! note
             If markers are specified but `pulse=None`, a zero amplitude pulse as long as the end of the longest
@@ -628,6 +657,22 @@ class Experiment:
                 The callback function.
             kwargs (dict):
                 These arguments are passed to the callback function as is.
+
+        !!! note
+            The argument values may consist of:
+
+                - `int`, `float`, `complex`, `str`, `bytes`, `bool`, `None` or `laboneq.dsl.Parameter`
+                - lists of the above
+                - dictionaries of the above with `str` keys
+
+            The lists and dictionaries may be nested and need not have homogeneous value types.
+            A `laboneq.dsl.Parameter`, however, must be the argument value itself: nested inside
+            a list or dictionary it is not resolved, and reaches the callback as the `Parameter`
+            object instead of the value of the current sweep step.
+
+            Other value types are not supported by the LabOne Q serializer. To pass a value of
+            another type, convert it to a supported one (numpy arrays: `.tolist()`), or serialize
+            it to `bytes` and deserialize it inside the callback.
         """
         current_section = self._peek_section()
         current_section.call(func_name=func_name, **kwargs)

@@ -23,7 +23,6 @@ from laboneq.data.artifacts_qccs import ArtifactsCodegen
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from laboneq.core.types.compiled_experiment import CompiledExperiment
     from laboneq.data.artifacts_qccs import (
         CodegenWaveform,
         PulseWaveformMap,
@@ -250,35 +249,3 @@ def calc_wave_replacements(
             )
 
     return replacements
-
-
-def replace_pulse(
-    target: CompiledExperiment,
-    pulse_uid: str | Pulse,
-    pulse_or_array: ArrayLike | Pulse,
-):
-    """Replaces specific pulse with the new sample data.
-
-    Args:
-        target: See CompiledExperiment.replace_pulse for details.
-        pulse_uid: pulse to replace, can be Pulse object or uid of the pulse
-        pulse_or_array: replacement pulse, can be Pulse object or value array (see sampled_pulse_* from the pulse library)
-    """
-    artifacts = target.scheduled_experiment.artifacts
-    uid = (
-        pulse_uid
-        if isinstance(pulse_uid, str)
-        else getattr(pulse_uid, "uid", "<unknown>")
-    )
-    wave_replacements = calc_wave_replacements(artifacts, uid, pulse_or_array, {})
-    # Ensured by `calc_wave_replacements`
-    assert isinstance(artifacts, ArtifactsCodegen)
-    for repl in wave_replacements:
-        if repl.replacement_type == ReplacementType.I_Q:
-            if len(repl.samples) == 2:
-                wave_i = artifacts.waves[repl.sig_string + "_i.wave"]
-                wave_q = artifacts.waves[repl.sig_string + "_q.wave"]
-                wave_i.samples = repl.samples[0]
-                wave_q.samples = repl.samples[1]
-            else:
-                artifacts.waves[repl.sig_string + ".wave"].samples = repl.samples[0]

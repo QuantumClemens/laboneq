@@ -16,14 +16,12 @@ use crate::error::{Error, Result};
 /// * `Ok(())` if the experiment has exactly one real-time averaging loop.
 /// * `Err(Error)` if there are zero or multiple real-time averaging loops.
 pub(super) fn resolve_timing_boundary(node: &mut ExperimentNode) -> Result<()> {
-    let averaging_loop_count = resolve_timing_boundary_impl(node)?;
-    if averaging_loop_count == 1 {
-        // If there is exactly one averaging loop, we are good.
-        return Ok(());
+    if resolve_timing_boundary_impl(node)? != 1 {
+        return Err(Error::new(
+            "Experiment must have exactly one real time acquisition loop.",
+        ));
     }
-    Err(Error::new(format!(
-        "Experiment must have exactly one real time acquisition loop. Found {averaging_loop_count}."
-    )))
+    Ok(())
 }
 
 fn resolve_timing_boundary_impl(node: &mut ExperimentNode) -> Result<usize> {
@@ -139,12 +137,11 @@ mod tests {
                 [(Operation::AveragingLoop(make_acquire_rt()), [])]
             ),]
         );
-        let err_msg = format!("Found {}.", 2);
         assert!(
             resolve_timing_boundary(&mut tree)
                 .unwrap_err()
                 .to_string()
-                .contains(&err_msg)
+                .contains("Experiment must have exactly one real time acquisition loop.")
         );
     }
 }

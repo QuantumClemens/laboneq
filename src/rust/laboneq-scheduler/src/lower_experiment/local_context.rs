@@ -1,12 +1,14 @@
 // Copyright 2025 Zurich Instruments AG
 // SPDX-License-Identifier: Apache-2.0
 
-use laboneq_dsl::types::{ParameterUid, SectionTimingMode, SectionUid, SignalUid, SweepParameter};
+use laboneq_dsl::types::{
+    HandleUid, ParameterUid, SectionTimingMode, SectionUid, SignalUid, SweepParameter,
+};
 use laboneq_units::tinysample::TinySamples;
 use num_integer::lcm;
 use std::collections::HashMap;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::parameter_resolver::ParameterResolver;
 use crate::utils::{SignalGridInfo, compute_signal_grids};
 
@@ -16,6 +18,9 @@ pub(super) struct LocalContext<'a> {
     pub system_grid: TinySamples,
     signal_grids: HashMap<SignalUid, (TinySamples, TinySamples)>,
     pub section_timing_mode: SectionTimingMode,
+    /// Map from acquisition handle UIDs to signal UIDs, populated as
+    /// `Acquire` operations are visited in program order.
+    handle_to_signal: HashMap<HandleUid, SignalUid>,
 }
 
 impl<'a> LocalContext<'a> {
@@ -24,20 +29,45 @@ impl<'a> LocalContext<'a> {
         nt_parameters: &'a crate::ParameterStore,
         system_grid: TinySamples,
         signals: impl Iterator<Item = &'b (impl SignalGridInfo + 'b)>,
-    ) -> Self {
+    ) -> Result<Self> {
         let resolver: ParameterResolver = ParameterResolver::new(parameters, nt_parameters);
-        LocalContext {
+        let signal_grids = signals
+            .map(|s| Ok((s.uid(), compute_signal_grids(s)?)))
+            .collect::<Result<HashMap<_, _>>>()?;
+        Ok(LocalContext {
             section_uid: None,
             section_timing_mode: SectionTimingMode::Relaxed,
             resolver_stack: vec![resolver],
             system_grid,
-            signal_grids: signals
-                .map(|s| {
-                    let (signal_grid, sequencer_grid) = compute_signal_grids(s);
-                    (s.uid(), (signal_grid, sequencer_grid))
-                })
-                .collect(),
+            signal_grids,
+            handle_to_signal: HashMap::new(),
+        })
+    }
+
+    /// Record that `handle` is associated with `signal`, as observed at an
+    /// `Acquire` operation.
+    pub(super) fn set_handle_signal(&mut self, handle: HandleUid, signal: SignalUid) -> Result<()> {
+        if let Some(existing_signal) = self.handle_to_signal.get(&handle)
+            && existing_signal != &signal
+        {
+            return Err(Error::new(format!(
+                "Acquisition handle '{}' is associated with multiple signals, only one allowed.",
+                handle.0
+            )));
         }
+        self.handle_to_signal.insert(handle, signal);
+        Ok(())
+    }
+
+    /// Look up the signal most recently associated with `handle` by an
+    /// `Acquire` operation earlier in program order.
+    pub(super) fn handle_signal(&self, handle: &HandleUid) -> Result<&SignalUid> {
+        self.handle_to_signal.get(handle).ok_or_else(|| {
+            Error::new(format!(
+                "Handle '{}' is used in a match before being acquired.",
+                handle.0
+            ))
+        })
     }
 
     pub(super) fn signal_grids(&self, signal: &SignalUid) -> (TinySamples, TinySamples) {

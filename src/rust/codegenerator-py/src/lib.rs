@@ -9,7 +9,7 @@ use laboneq_common::named_id::NamedIdStore;
 use laboneq_dsl::types::ExternalParameterUid;
 use laboneq_error::LabOneQError;
 use laboneq_ir::ExperimentIr;
-use laboneq_py_utils::py_object_interner::PyObjectInterner;
+use laboneq_py_utils::py_object_store::PyObjectStore;
 use pyo3::intern;
 use pyo3::prelude::*;
 use waveform_sampler::PlayHoldPy;
@@ -35,7 +35,7 @@ pub fn generate_code_py(
     experiment: ExperimentIr,
     setup_description: &HardwareSetup,
     compiler_settings: &CompilerSettings,
-    py_object_store: &PyObjectInterner<ExternalParameterUid>,
+    py_object_store: &PyObjectStore<ExternalParameterUid>,
 ) -> Result<SeqCGenOutput, LabOneQError> {
     let (codegen_ir, dedup) = ir_to_codegen_ir(&experiment, setup_description)?;
     let sampler = WaveformSamplerPy::new(
@@ -55,7 +55,7 @@ pub fn artifacts_to_py<'py>(
     py: Python<'py>,
     result: SeqCGenOutput,
     id_store: &NamedIdStore,
-    py_object_store: &PyObjectInterner<ExternalParameterUid>,
+    py_object_store: &PyObjectStore<ExternalParameterUid>,
 ) -> Result<Bound<'py, PyAny>, LabOneQError> {
     let result = SeqCGenOutputPy::new(py, result, id_store, py_object_store)?;
     let parameter_py: Bound<'_, PyAny> = py

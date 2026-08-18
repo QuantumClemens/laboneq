@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from laboneq.controller.api.commons import SubmissionHandle
     from laboneq.controller.controller import SubmissionStatus
+    from laboneq.data.instrument_topology import InstrumentTopology
     from laboneq.data.scheduled_experiment import ScheduledExperiment
     from laboneq.dsl.device.device_setup import DeviceSetup
     from laboneq.dsl.result.results import Results
@@ -24,6 +25,10 @@ class AsyncControllerAPI(ABC):
     @abstractmethod
     async def get_default_devicesetup(self) -> DeviceSetup:
         """Retrieve the device setup describing the hardware the controller is connected to."""
+
+    @abstractmethod
+    async def get_instrument_topology(self) -> InstrumentTopology:
+        """Retrieve the instrument topology describing the hardware layout."""
 
     @abstractmethod
     async def submit_experiment(

@@ -54,7 +54,7 @@ pub mod event_type {
 // =============================================================================
 
 /// Schedule output containing event list and metadata for PSV.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct PulseSheetSchedule {
     /// Time-ordered list of scheduler events
     pub event_list: EventList,
@@ -1204,6 +1204,7 @@ impl<'a> EventListGenerator<'a> {
                                 .insert("prng_sample".to_string(), serde_json::json!(sample_name));
                         }
                         crate::ir::MatchTarget::SweepParameter(_) => {}
+                        crate::ir::MatchTarget::Variable(_) => {}
                     }
                 }
 

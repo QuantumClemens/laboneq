@@ -7,14 +7,16 @@ use crate::error::{Error, Result};
 
 use crate::experiment_context::ExperimentContext;
 use crate::lower_experiment::local_context::LocalContext;
-use crate::lower_experiment::{adjust_node_grids, lower_children};
+use crate::lower_experiment::{adjust_node_grids, lower_children, lower_section};
 use crate::schedule_info::ScheduleInfoBuilder;
 use laboneq_ir::{Case, IrKind, Match};
 
 use crate::{ScheduledNode, SignalInfo};
 use laboneq_dsl::ExperimentNode;
-use laboneq_dsl::operation::{Case as CaseDsl, Match as MatchDsl, Operation};
-use laboneq_dsl::types::{MatchTarget, NumericLiteral, SweepParameter};
+use laboneq_dsl::operation::{
+    Case as CaseDsl, Match as MatchDsl, Operation, Section as SectionDsl,
+};
+use laboneq_dsl::types::{MatchTarget, NumericLiteral, SectionAlignment, SweepParameter};
 use laboneq_units::tinysample::{seconds_to_tinysamples, tiny_samples};
 
 /// Grid size for local feedback
@@ -33,6 +35,15 @@ pub(super) fn lower_match(
     local_ctx: &mut LocalContext,
 ) -> Result<ScheduledNode> {
     let section = try_cast_match(&node.kind);
+
+    // A match on a near-time swept parameter collapses to the single case whose
+    // state equals the parameter's value at the current near-time step.
+    if let MatchTarget::SweepParameter(param_uid) = &section.target
+        && let Some(nt_value) = local_ctx.parameter_resolver().near_time_value(param_uid)
+    {
+        return lower_near_time_match(node, section, nt_value, ctx, local_ctx);
+    }
+
     let match_ = Match {
         uid: section.uid,
         target: section.target.clone(),
@@ -44,7 +55,7 @@ pub(super) fn lower_match(
         .section_timing_mode(local_ctx.section_timing_mode);
     if let MatchTarget::Handle(handle) = &match_.target {
         // TODO (PW) is this correct? should it not be 100 ns regardless of the sampling rate?
-        let signal = ctx.get_signal(ctx.handle_to_signal.get(handle).unwrap())?;
+        let signal = ctx.get_signal(local_ctx.handle_signal(handle)?)?;
         let grid = if match_.local {
             LOCAL_FEEDBACK_GRID_SAMPLES
         } else {
@@ -142,6 +153,41 @@ pub(super) fn lower_match(
     }
     adjust_node_grids(&mut root);
     Ok(root)
+}
+
+/// Lower a match on a near-time swept parameter.
+///
+/// The parameter's value is fixed for the current near-time step, so exactly
+/// one case is active. That case is scheduled as a plain section.
+fn lower_near_time_match(
+    node: &ExperimentNode,
+    match_: &MatchDsl,
+    nt_value: NumericLiteral,
+    ctx: &ExperimentContext<impl SignalInfo>,
+    local_ctx: &mut LocalContext,
+) -> Result<ScheduledNode> {
+    let case_child = node
+        .children
+        .iter()
+        .find(|child| cast_case(&child.kind).is_some_and(|case| case.state == nt_value))
+        .ok_or_else(|| {
+            Error::new(format!(
+                "Match section '{}' has no case for near-time parameter value '{}'.",
+                match_.uid.0, nt_value
+            ))
+        })?;
+    let case = cast_case(&case_child.kind).expect("Case child verified above");
+
+    let synthetic_section = SectionDsl {
+        uid: case.uid,
+        alignment: SectionAlignment::Left,
+        length: None,
+        play_after: match_.play_after.clone(),
+        triggers: vec![],
+        on_system_grid: false,
+        section_timing_mode: local_ctx.section_timing_mode,
+    };
+    lower_section(&synthetic_section, &case_child.children, ctx, local_ctx)
 }
 
 fn cast_case(kind: &Operation) -> Option<&CaseDsl> {

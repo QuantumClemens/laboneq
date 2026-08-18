@@ -2,13 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from enum import Enum
-from typing import Literal, Protocol, TypedDict
+from typing import Literal, Protocol
 
-from laboneq.compiler.common.iface_compiler_output import (
-    CombinedOutput,
-    RTCompilerOutput,
-)
-from laboneq.core.types.numpy_support import NumPyArray
+from laboneq.compiler.common.iface_compiler_output import RTCompilerOutput
 from laboneq.core.types.units import Quantity
 from laboneq.data.scheduled_experiment import ScheduledExperiment
 from laboneq.dsl.experiment import Section
@@ -23,32 +19,6 @@ class ProcessedExperiment:
     def device_lead_delay(self, device_uid: str) -> float: ...
     def signal_delay_compensation(self, signal_uid: str) -> float: ...
     def signal_precompensation(self, signal_uid: str) -> dict[str, dict] | None: ...
-    def get_result_shapes(
-        self, combined_output: CombinedOutput
-    ) -> list[HandleResultShape]: ...
-    def rt_loop_properties(self) -> RtLoopProperties: ...
-
-class RtLoopProperties:
-    """Properties of the real-time loop."""
-
-    acquisition_type: Literal[
-        "INTEGRATION",
-        "RAW",
-        "DISCRIMINATION",
-        "SPECTROSCOPY_IQ",
-        "SPECTROSCOPY_PSD",
-        "SPECTROSCOPY",
-    ]
-    averaging_mode: Literal["CYCLIC", "SEQUENTIAL", "SINGLE_SHOT"]
-    count: int
-
-class HandleResultShape:
-    handle: str
-    shape: list[int]
-    axis_names: list[list[str]]
-    axis_values: list[list[NumPyArray]]
-    chunked_axis_index: int | None
-    match_case_mask: dict[int, list[int]]
 
 # ---------------------------------------------------------------------------
 # Input DTOs for serialize_experiment()
@@ -185,22 +155,11 @@ def compile_experiment(
 ) -> ScheduledExperiment:
     """Build a scheduled experiment from Cap'n Proto bytes."""
 
-class PulseSheetSchedule(TypedDict):
-    """A representation of the pulse sheet schedule for the Pulse Sheet Viewer.
+class PulseSheetSchedule:
+    """Opaque handle to a pulse sheet schedule computed by the real-time compiler.
 
-    Attributes:
-        event_list: List of scheduler events.
-        event_list_truncated: Whether event generation hit the MAX_EVENTS_TO_PUBLISH limit.
-        section_info: Section metadata with preorder map.
-        section_signals_with_children: Signal hierarchy per section.
-        sampling_rates: Sampling rates per device type.
+    Carried opaquely through the near-time executor and only unpacked for the final compiler output.
     """
-
-    event_list: list[dict]
-    event_list_truncated: bool
-    section_info: dict
-    section_signals_with_children: dict
-    sampling_rates: dict
 
 class RealTimeCompilerOutput:
     """Result of a real-time compilation.

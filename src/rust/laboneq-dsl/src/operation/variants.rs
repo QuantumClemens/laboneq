@@ -4,11 +4,12 @@
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 
+use crate::hqcs::{Predicate, VariableValue};
 use crate::types::{
     AcquisitionType, AveragingMode, ComplexOrFloat, ExternalParameterUid, HandleUid, Marker,
     MatchTarget, NumericLiteral, ParameterUid, PrngSampleUid, PulseParameterUid, PulseUid,
-    RepetitionMode, SectionAlignment, SectionTimingMode, SectionUid, SignalUid, Trigger,
-    ValueOrParameter,
+    RepetitionMode, SectionAlignment, SectionTimingMode, SectionUid, SignalUid, StreamUid, Trigger,
+    ValueOrParameter, VariableUid,
 };
 use laboneq_common::named_id::NamedId;
 use laboneq_common::types::Literal;
@@ -156,6 +157,38 @@ pub struct AveragingLoop {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Send {
+    pub stream: StreamUid,
+    /// Literal values for the stream schema's non-measurement fields.
+    pub args: Vec<SendArg>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendArg {
+    /// Stream schema field name.
+    pub name: String,
+    pub value: VariableValue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarkStale {
+    pub target: MarkStaleTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MarkStaleTarget {
+    Variable(VariableUid),
+    Pulse(PulseUid),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DoUntil {
+    pub uid: SectionUid,
+    pub condition: Predicate,
+    pub max_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
     Root,
     Section(Section),
@@ -174,6 +207,9 @@ pub enum Operation {
     /// Near-time callback is an external function call that is executed between near-time steps.
     NearTimeCallback(NearTimeCallback),
     SetNode(SetNode),
+    Send(Send),
+    MarkStale(MarkStale),
+    DoUntil(DoUntil),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -244,6 +280,7 @@ impl Operation {
             Operation::AveragingLoop(s) => SectionInfo { uid: &s.uid }.into(),
             Operation::Match(s) => SectionInfo { uid: &s.uid }.into(),
             Operation::Case(s) => SectionInfo { uid: &s.uid }.into(),
+            Operation::DoUntil(s) => SectionInfo { uid: &s.uid }.into(),
             Operation::Root
             | Operation::Reserve(_)
             | Operation::PlayPulse(_)
@@ -252,7 +289,9 @@ impl Operation {
             | Operation::ResetOscillatorPhase(_)
             | Operation::RealTimeBoundary
             | Operation::NearTimeCallback(_)
-            | Operation::SetNode(_) => None,
+            | Operation::SetNode(_)
+            | Operation::Send(_)
+            | Operation::MarkStale(_) => None,
         }
     }
 
@@ -300,7 +339,10 @@ impl Operation {
             | Operation::ResetOscillatorPhase(_)
             | Operation::RealTimeBoundary
             | Operation::NearTimeCallback(_)
-            | Operation::SetNode(_) => None,
+            | Operation::SetNode(_)
+            | Operation::Send(_)
+            | Operation::MarkStale(_)
+            | Operation::DoUntil(_) => None,
         }
     }
 
@@ -326,7 +368,10 @@ impl Operation {
             | Operation::Acquire(_)
             | Operation::Delay(_)
             | Operation::ResetOscillatorPhase(_)
-            | Operation::RealTimeBoundary => Ok(()),
+            | Operation::RealTimeBoundary
+            | Operation::Send(_)
+            | Operation::MarkStale(_)
+            | Operation::DoUntil(_) => Ok(()),
         }
     }
 }

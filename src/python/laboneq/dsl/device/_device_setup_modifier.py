@@ -16,7 +16,9 @@ import abc
 import copy
 import itertools
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
+
+import attrs
 
 import laboneq.core.path as qct_path
 from laboneq.core.exceptions import LabOneQException
@@ -629,6 +631,65 @@ def _raise_for_invalid_ports(instr: Instrument, ports: list[str]):
             raise DeviceSetupInternalException(msg)
 
 
+def _all_strings(items: list[str | None]) -> TypeGuard[list[str]]:
+    return all(x is not None for x in items)
+
+
+def _resolve_signal_connection_ports(
+    setup: DeviceSetup,
+    dev: Instrument,
+    instrument: str,
+    connection: SignalConnection,
+) -> list[str]:
+    """Resolve a single-entry `ports` spec that names an already-defined
+    logical signal on `dev` into the raw port(s) backing that signal.
+
+    If the single entry is already a literal port on `dev`, it is returned
+    unchanged. If it matches neither a literal port nor a known logical
+    signal, it is also returned unchanged for `ZQCS` (which has no fixed
+    port vocabulary and treats it as a brand-new port name), and raises for
+    every other instrument type.
+    """
+    [port] = connection.ports
+    port_uids = [p.uid for p in dev.ports]
+    if port in port_uids:
+        return connection.ports
+
+    bare_uid = qct_path.remove_logical_signal_prefix(port)
+    ls = None
+    group = None
+    try:
+        group, name = bare_uid.split(qct_path.Separator)
+    except ValueError:
+        pass
+    if group is not None:
+        lsg = setup.logical_signal_groups.get(group)
+        if lsg is not None:
+            ls = lsg.logical_signals.get(name)
+
+    if ls is None or ls.physical_channel is None:
+        return connection.ports
+
+    ls_instrument = ls.physical_channel.uid.split(qct_path.Separator)[0]
+    if ls_instrument != instrument:
+        raise DeviceSetupInternalException(
+            f"Logical signal '{port}' cannot be used as a port on "
+            f"'{instrument}': it is connected to '{ls_instrument}', not "
+            f"'{instrument}'."
+        )
+
+    ls_ports = [
+        conn.local_port for conn in dev.connections if conn.remote_path == ls.path
+    ]
+    if _all_strings(ls_ports):
+        return ls_ports
+    else:
+        raise DeviceSetupInternalException(
+            f"Logical signal '{port}' cannot be used as a target connection on "
+            f"'{instrument}': one of its existing connections is not valid."
+        )
+
+
 def add_connection(
     setup: DeviceSetup,
     instrument: str,
@@ -656,6 +717,12 @@ def add_connection(
     dev = setup.instrument_by_uid(instrument)
     if dev is None:
         raise DeviceSetupInternalException(f"Instrument {instrument} not found.")
+
+    if isinstance(connection, SignalConnection) and len(connection.ports) == 1:
+        connection = attrs.evolve(
+            connection,
+            ports=_resolve_signal_connection_ports(setup, dev, instrument, connection),
+        )
 
     handler = HANDLERS[dev.__class__]
     if isinstance(dev, ZQCS):

@@ -7,7 +7,6 @@ import itertools
 from collections import Counter
 from typing import TYPE_CHECKING
 
-import matplotlib.pyplot as plt
 import networkx as nx
 
 from laboneq.core.utilities.add_exception_note import add_note
@@ -764,6 +763,9 @@ class QPUTopology:
         ]
 
         if ax is None:
+            # Imported lazily: pyplot is a large import and only plotting needs it.
+            import matplotlib.pyplot as plt
+
             _, ax = plt.subplots(figsize=figsize)
 
         fixed = list(fixed_pos.keys()) if fixed_pos else None

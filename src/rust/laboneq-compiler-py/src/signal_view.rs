@@ -13,7 +13,8 @@ use laboneq_ir::signal::Signal;
 use laboneq_ir::system::{AwgDevice, DeviceSetup};
 use laboneq_scheduler::SignalInfo;
 
-use laboneq_units::duration::{Duration, Second};
+use laboneq_units::duration::{Duration, Frequency, Hertz, Second};
+
 /// A view over a signal and its associated device.
 ///
 /// Provides convenient access to signal and device properties.
@@ -52,7 +53,7 @@ impl SignalView<'_> {
         self.device.uid()
     }
 
-    pub fn device_traits(&self) -> &'static DeviceTraits {
+    fn device_traits(&self) -> &'static DeviceTraits {
         DeviceTraits::from_device_kind(&self.device_kind())
     }
 
@@ -121,8 +122,20 @@ impl SignalInfo for SignalView<'_> {
         self.sampling_rate()
     }
 
-    fn device_traits(&self) -> &'static DeviceTraits {
-        DeviceTraits::from_device_kind(&self.device_kind())
+    fn sequencer_rate(&self) -> f64 {
+        self.sampling_rate() / self.device_traits().sample_multiple as f64
+    }
+
+    fn oscillator_set_latency(&self) -> Duration<Second> {
+        self.device_traits().oscillator_set_latency
+    }
+
+    fn oscillator_reset_duration(&self) -> Duration<Second> {
+        self.device_traits().oscillator_reset_duration
+    }
+
+    fn lo_frequency_granularity(&self) -> Option<Frequency<Hertz>> {
+        self.device_traits().lo_frequency_granularity
     }
 
     fn oscillator(&self) -> Option<&Oscillator> {

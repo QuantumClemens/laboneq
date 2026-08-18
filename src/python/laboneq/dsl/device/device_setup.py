@@ -21,9 +21,11 @@ from laboneq.dsl.device.servers import DataServer
 from ._device_setup_generator import _DeviceSetupGenerator
 
 if TYPE_CHECKING:
+    from laboneq.data.instrument_topology import InstrumentTopology
     from laboneq.data.setup_descriptions import SetupDescription
     from laboneq.dsl import quantum
     from laboneq.dsl.calibration.signal_calibration import SignalCalibration
+    from laboneq.dsl.coprocessor.inventory import CoprocessorInventoryEntry
     from laboneq.dsl.device.connection import InternalConnection, SignalConnection
     from laboneq.dsl.device.logical_signal_group import LogicalSignal
 
@@ -51,6 +53,8 @@ class DeviceSetup:
             Qubits are generated from the descriptor `qubits` section.
         setup_description (SetupDescription | None): Hardware-generation-tagged
             opaque setup description, or `None` if no description is attached.
+        coprocessors (dict[str, CoprocessorInventoryEntry]): Coprocessor inventory
+            advertised by the system, by coprocessor key.
 
     !!! version-changed "Changed in version 2.61.0"
 
@@ -73,6 +77,13 @@ class DeviceSetup:
     logical_signal_groups: dict[str, LogicalSignalGroup] = attrs.field(factory=dict)
     qubits: dict[str, "quantum.QuantumElement"] = attrs.field(factory=dict)
     setup_description: SetupDescription | None = attrs.field(default=None, repr=False)
+    coprocessors: dict[str, CoprocessorInventoryEntry] = attrs.field(
+        factory=dict, repr=False
+    )
+
+    #: Base URL of the LabOne Q controller service this setup dispatches to,
+    #: carried over from an instrument topology that service served.
+    controller_service_url: str | None = attrs.field(default=None, init=False)
 
     #: Mediators responsible for coupling calibration of physical channel and its mapped logical signals
     _calibration_mediators: dict[str, CalibrationMediator] = attrs.field(init=False)
@@ -483,5 +494,24 @@ class DeviceSetup:
             server_host=server_host,
             server_port=server_port,
             setup_name=setup_name,
+        )
+        return ds
+
+    @classmethod
+    def from_instrument_topology(
+        cls,
+        instrument_topology: InstrumentTopology,
+        uid: str | None = None,
+    ) -> DeviceSetup:
+        """Construct the device setup from an instrument topology.
+
+        Args:
+            instrument_topology: Instrument topology describing servers,
+                instruments, and connections.
+            uid: Name of the setup that should be created.
+        """
+        ds = _DeviceSetupGenerator.from_instrument_topology(
+            instrument_topology=instrument_topology,
+            uid=uid,
         )
         return ds

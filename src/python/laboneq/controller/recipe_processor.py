@@ -18,7 +18,6 @@ from typing import (
 )
 
 import numpy as np
-import zhinst.utils  # type: ignore[import-untyped]
 from packaging.version import InvalidVersion, Version
 from sortedcollections import NearestDict
 
@@ -33,6 +32,7 @@ from laboneq.controller.constants import (
     RESULT_TRANSFER_RATE_GW_FW,
     adjusted_transfer_rate,
 )
+from laboneq.controller.utilities.awg_waveform import convert_awg_waveform
 from laboneq.controller.utilities.exception import LabOneQControllerException
 from laboneq.core.types.enums import PortMode as RecipePortMode
 from laboneq.core.types.enums.acquisition_type import AcquisitionType
@@ -1065,7 +1065,7 @@ def _prepare_wave_iq(
     return WaveformItem(
         index=index,
         name=sig,
-        samples=zhinst.utils.convert_awg_waveform(
+        samples=convert_awg_waveform()(
             np.clip(np.ascontiguousarray(wave_i.samples), -1, 1),
             np.clip(np.ascontiguousarray(wave_q.samples), -1, 1),
             markers=marker_samples,
@@ -1081,7 +1081,7 @@ def _prepare_wave_single(
     return WaveformItem(
         index=index,
         name=sig,
-        samples=zhinst.utils.convert_awg_waveform(
+        samples=convert_awg_waveform()(
             np.clip(np.ascontiguousarray(wave.samples), -1, 1),
             markers=marker_samples,
         ),

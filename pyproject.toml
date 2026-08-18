@@ -57,7 +57,7 @@ dependencies = [
   "uvicorn[standard] >= 0.40.0",
   "zhinst-comms >= 3.4",
   "zhinst-comms-schemas~=4.1.0",
-  "zhinst-core~=26.7.1",          # Do not specify the build (fourth) version component for this dependency 
+  "zhinst-core~=26.7.1",          # Do not specify the build (fourth) version component for this dependency
   "zhinst-timing-models~=26.7.0",
   "zhinst-toolkit >=1.3.0",
   "zhinst-utils ==0.7.2",
@@ -110,7 +110,7 @@ dev = [
 tools = [
   "rust-just >= 1.43",
   "maturin >= 1.6, < 2.0",
-  "mypy >=1.20, <1.21",
+  "mypy >=2.3, <2.4",
   "types-PyYAML >= 6.0.12",
   "mypy-gitlab-code-quality >= 1.3.0",
   "pip >= 25.0.1",                     # used by PyCharm for scanning the venv
@@ -271,6 +271,13 @@ tests = ["tests"]
 
 [tool.ruff.format]
 docstring-code-format = true
+
+[tool.mypy]
+files = [
+  "src/python/laboneq",
+
+]
+check_untyped_defs = true
 
 [[tool.mypy.overrides]]
 module = [

@@ -3,11 +3,11 @@
 
 from __future__ import annotations
 
-import abc
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from laboneq._rust import compiler as compiler_rs
     from laboneq.data.nt_step_key import NtStepKey
 
 
@@ -19,7 +19,7 @@ class RTCompilerOutput:
     """Base class for a single run of a code generation backend."""
 
 
-class CombinedOutput(abc.ABC):
+class CombinedOutput:
     """Base class for compiler output _after_ linking individual runs of the code
     generation backend.
 
@@ -41,21 +41,6 @@ class CombinedOutput(abc.ABC):
                         unit needs to produce results all the others are launched with it producind NaN results.
     """
 
-    neartime_steps: list[NeartimeStepBase]
-
-    @staticmethod
-    @abc.abstractmethod
-    def _total_execution_time(self) -> float:
-        """Total duration of the real-time steps, in seconds."""
-
-    @staticmethod
-    @abc.abstractmethod
-    def _max_execution_time_per_step(self) -> float:
-        """Maximum duration of a single real-time step, in seconds."""
-
-    @abc.abstractmethod
-    def get_raw_acquire_length(self, signal_id: str, handle: str) -> int: ...
-
 
 @dataclass
 class RTCompilerOutputContainer:
@@ -64,4 +49,4 @@ class RTCompilerOutputContainer:
 
     device_class: int
     codegen_output: RTCompilerOutput
-    schedule: dict[str, Any] | None
+    schedule: compiler_rs.PulseSheetSchedule | None

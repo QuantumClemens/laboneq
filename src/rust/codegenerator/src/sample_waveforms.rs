@@ -180,7 +180,7 @@ pub struct WaveformSamplingCandidate<'a> {
 }
 
 fn update_waveform_candidates<'a>(
-    candidates: &mut HashMap<&'a WaveformSignature, WaveformSamplingCandidate<'a>>,
+    candidates: &mut IndexMap<&'a WaveformSignature, WaveformSamplingCandidate<'a>>,
     waveform: &'a WaveformSignature,
     signals: &'a [Arc<Signal>],
 ) {
@@ -200,7 +200,7 @@ fn update_waveform_candidates<'a>(
 
 fn find_waveforms<'a>(
     node: &'a IrNode,
-    candidates: &mut HashMap<&'a WaveformSignature, WaveformSamplingCandidate<'a>>,
+    candidates: &mut IndexMap<&'a WaveformSignature, WaveformSamplingCandidate<'a>>,
 ) {
     match node.data() {
         NodeKind::PlayWave(ob) => {
@@ -222,7 +222,7 @@ fn find_waveforms<'a>(
 pub(crate) fn collect_waveforms_for_sampling<'a>(
     node: &'a IrNode,
 ) -> Result<Vec<WaveformSamplingCandidate<'a>>> {
-    let mut sampling_candidates = HashMap::new();
+    let mut sampling_candidates = IndexMap::new();
     find_waveforms(node, &mut sampling_candidates);
     Ok(sampling_candidates.into_values().collect())
 }

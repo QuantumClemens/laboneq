@@ -72,9 +72,15 @@ class PulseFunctional(Pulse):
         - lists of the above
         - dictionaries of the above with `str` keys
 
-            The lists and dictionaries may be nested and need not have homogeneous value types.
+    The lists and dictionaries may be nested and need not have homogeneous value types.
+    A `laboneq.dsl.Parameter`, however, must be the pulse parameter value itself: nested
+    inside a list or dictionary it is not resolved, and reaches the pulse sampler as the
+    `Parameter` object instead of the value of the current sweep step.
 
-            Other value types are not supported by the LabOne Q serializer.
+    Other value types are not supported by the LabOne Q serializer. To pass a
+    value of another type, convert it to a supported one (numpy arrays:
+    `.tolist()`), or serialize it to `bytes` and deserialize it inside the
+    pulse sampler.
     """
 
     #: Key for the function used for sampling the pulse.

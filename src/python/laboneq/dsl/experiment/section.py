@@ -510,6 +510,8 @@ class Match(Section):
             PRNG sample to match.
         sweep_parameter (SweepParameter | None):
             Sweep parameter to match.
+        variable (Variable | None):
+            HQCS coprocessor Variable to match on.
         local (bool):
             Whether to fetch the codeword via the PQSC (`False`),
             SHFQC-internal bus (`True`) or automatic (`None`).
@@ -538,6 +540,8 @@ class Match(Section):
 
     # Whether to fetch the codeword via the PQSC (False), SHFQC-internal bus (True) or automatic (None)
     local: bool | None = None
+
+    variable: Any | None = None
 
     def add(self, case: Case):
         """Add a branch to which to switch.

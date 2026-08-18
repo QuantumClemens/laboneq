@@ -61,6 +61,13 @@ impl<'a> ParameterResolver<'a> {
         })
     }
 
+    /// Returns the value of a near-time parameter in the current near-time step.
+    ///
+    /// If the requested paramter is not a near-time parameter, return `None`.
+    pub(crate) fn near_time_value(&self, uid: &ParameterUid) -> Option<NumericLiteral> {
+        self.nt_parameters.get(uid).copied()
+    }
+
     /// Returns the sweep parameter associated with the given UID.
     pub(crate) fn try_resolve_parameter(&self, uid: &ParameterUid) -> Result<&SweepParameter> {
         self.check_parameter_availability(uid)?;

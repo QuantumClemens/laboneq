@@ -5,6 +5,7 @@
 
 using Common = import "common.capnp";
 using Operation = import "operation.capnp";
+using Coprocessor = import "coprocessor.capnp";
 
 # ========================================================================================
 # Section Tree
@@ -46,6 +47,8 @@ struct Section {
 
     caseSection @8 :CaseSection;
     # Case branch within a `MatchSection`.
+
+    doUntil @10 :DoUntilSection;
   }
 
   contentItems @9 :List(SectionItem);
@@ -241,6 +244,9 @@ struct MatchSection {
 
     sweepParameter @5 :Common.Id;
     # `Experiment.sweepParameters` index.
+
+    variable @9 :Common.Id;
+    # Index into `Experiment.variables`.
   }
 
   local :union {
@@ -268,6 +274,11 @@ struct CaseSection {
   sectionTimingMode @1 :SectionTimingMode;
   # Timing mode for this case branch. Controls whether rounding of pulse and delay
   # lengths within this branch is allowed.
+}
+
+struct DoUntilSection {
+  condition @0 :Coprocessor.Predicate;
+  maxCount @1 :UInt32;
 }
 
 # ========================================================================================

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
 from laboneq.compiler.common.iface_compiler_output import (
     RTCompilerOutputContainer,
@@ -41,32 +41,8 @@ def compile_realtime(
     for used_parameter in result.used_parameters:
         near_time_parameters.mark_used(used_parameter)
 
-    pulse_sheet_schedule = (
-        _prepare_pulse_sheet_schedule(result.pulse_sheet_schedule)
-        if result.pulse_sheet_schedule is not None
-        else None
-    )
-
     return RTCompilerOutputContainer(
         device_class=device_class,
         codegen_output=result.codegen_output(),
-        schedule=pulse_sheet_schedule,
+        schedule=result.pulse_sheet_schedule,
     )
-
-
-def _prepare_pulse_sheet_schedule(schedule: compiler_rs.PulseSheetSchedule) -> Schedule:
-    return Schedule(
-        event_list=schedule["event_list"],
-        event_list_truncated=schedule["event_list_truncated"],
-        section_info=schedule["section_info"],
-        section_signals_with_children=schedule["section_signals_with_children"],
-        sampling_rates=schedule["sampling_rates"],
-    )
-
-
-class Schedule(TypedDict):
-    event_list: list[dict]
-    event_list_truncated: bool
-    section_info: dict[str, dict]
-    section_signals_with_children: dict[str, list[str]]
-    sampling_rates: list[tuple[list[str], float]]

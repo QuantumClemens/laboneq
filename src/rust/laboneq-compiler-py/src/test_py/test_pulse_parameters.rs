@@ -32,7 +32,7 @@ fn test_pulse_parameters_handling() {
             deserialize_experiment(py, capnp_data.extract::<&[u8]>().unwrap(), false).unwrap();
         let id_store = deserialized.id_store;
         // Test sweep parameter collection
-        let parameter = deserialized.parameters.iter().next().unwrap().1;
+        let parameter = deserialized.parameters.first().unwrap();
         assert_eq!(id_store.resolve(parameter.uid).unwrap(), "sweep_param123");
 
         // Test pulse parameters

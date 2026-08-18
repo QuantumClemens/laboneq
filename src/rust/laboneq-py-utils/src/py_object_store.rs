@@ -1,0 +1,143 @@
+// Copyright 2025 Zurich Instruments AG
+// SPDX-License-Identifier: Apache-2.0
+
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::hash::{Hash, Hasher};
+
+use pyo3::IntoPyObjectExt;
+use pyo3::prelude::*;
+use pyo3::types::PyBytes;
+use twox_hash::XxHash3_64;
+
+use crate::constant_serializer::deserialize_json;
+
+/// Serialized payload of a value the compiler carries through opaquely.
+#[derive(Hash)]
+pub enum PyObjectPayload<'a> {
+    /// A Python `str`.
+    Str(&'a str),
+    /// JSON written by [`crate::constant_serializer::serialize_json`].
+    Json(&'a [u8]),
+    /// Opaque `bytes` supplied by the user.
+    RawBytes(&'a [u8]),
+}
+
+/// Content-addressed store of Python objects the compiler carries through
+/// opaquely.
+///
+/// Callers submit a serialized payload and get back a UID.
+/// The store deserializes the payload into a Python object only once, and returns the same UID for
+/// repeated submissions of the same payload. The store can resolve a UID back to the Python object.
+///
+/// UIDs are process-local -- never serialized, valid only within the run that
+/// produced them -- so the hash needs no cross-version stability.
+#[derive(Default)]
+pub struct PyObjectStore<K: Copy + Eq + Hash + From<u64>> {
+    values: HashMap<K, Py<PyAny>>,
+}
+
+impl<K: Copy + Eq + Hash + From<u64>> PyObjectStore<K> {
+    pub fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+        }
+    }
+
+    /// Store the Python value `payload` denotes and return its UID.
+    ///
+    /// The value is only reconstructed if the payload is not already stored, so a
+    /// payload referenced from many places is deserialized once.
+    pub fn store(&mut self, py: Python<'_>, payload: PyObjectPayload<'_>) -> PyResult<K> {
+        let uid = K::from(uid_of(&payload));
+        if let Entry::Vacant(entry) = self.values.entry(uid) {
+            entry.insert(payload.into_py_object(py)?);
+        }
+        Ok(uid)
+    }
+
+    /// Resolve the Python object associated with the given UID.
+    pub fn resolve(&self, key: &K) -> Option<&Py<PyAny>> {
+        self.values.get(key)
+    }
+}
+
+fn uid_of(payload: &PyObjectPayload<'_>) -> u64 {
+    let mut hasher = XxHash3_64::new();
+    payload.hash(&mut hasher);
+    hasher.finish()
+}
+
+impl PyObjectPayload<'_> {
+    fn into_py_object(self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self {
+            Self::Str(value) => value.into_py_any(py),
+            Self::Json(bytes) => Ok(deserialize_json(py, bytes)?.unbind()),
+            Self::RawBytes(bytes) => Ok(PyBytes::new(py, bytes).into_any().unbind()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::prelude::*;
+
+    use super::{PyObjectPayload, PyObjectStore};
+
+    const JSON: &[u8] = b"[1, 2]";
+
+    fn new_store() -> PyObjectStore<u64> {
+        PyObjectStore::new()
+    }
+
+    #[test]
+    fn stores_and_resolves_each_payload_kind() {
+        Python::attach(|py| {
+            let mut store = new_store();
+
+            let str_uid = store.store(py, PyObjectPayload::Str("x")).unwrap();
+            let json_uid = store.store(py, PyObjectPayload::Json(JSON)).unwrap();
+            let bytes_uid = store.store(py, PyObjectPayload::RawBytes(b"x")).unwrap();
+
+            let resolved_str = store.resolve(&str_uid).unwrap();
+            assert!(resolved_str.bind(py).eq("x").unwrap());
+            let resolved_json = store.resolve(&json_uid).unwrap();
+            assert!(resolved_json.bind(py).eq(vec![1, 2]).unwrap());
+            let resolved_bytes = store.resolve(&bytes_uid).unwrap();
+            assert!(resolved_bytes.bind(py).eq(b"x".as_slice()).unwrap());
+        });
+    }
+
+    #[test]
+    fn separates_payload_kinds_sharing_bytes() {
+        // `Json` and `RawBytes` are both `&[u8]`, so without the variant
+        // discriminant these would share a UID and one would shadow the other.
+        // Reachable whenever a user's raw bytes happen to spell valid JSON.
+        Python::attach(|py| {
+            let mut store = new_store();
+
+            let json_uid = store.store(py, PyObjectPayload::Json(JSON)).unwrap();
+            let bytes_uid = store.store(py, PyObjectPayload::RawBytes(JSON)).unwrap();
+            assert_ne!(json_uid, bytes_uid);
+
+            let str_uid = store.store(py, PyObjectPayload::Str("x")).unwrap();
+            let raw_uid = store.store(py, PyObjectPayload::RawBytes(b"x")).unwrap();
+            assert_ne!(str_uid, raw_uid);
+        });
+    }
+
+    #[test]
+    fn equal_payloads_share_one_entry() {
+        // The point of the store: repeated references resolve to one object.
+        Python::attach(|py| {
+            let mut store = new_store();
+
+            let first = store.store(py, PyObjectPayload::Json(JSON)).unwrap();
+            let again = store.store(py, PyObjectPayload::Json(JSON)).unwrap();
+            let other = store.store(py, PyObjectPayload::Json(b"[1, 3]")).unwrap();
+
+            assert_eq!(first, again);
+            assert_ne!(first, other);
+        });
+    }
+}

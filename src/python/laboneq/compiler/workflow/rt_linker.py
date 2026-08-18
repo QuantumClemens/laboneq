@@ -44,10 +44,12 @@ def merge_compiler_runs(
 
 
 def repeat_previous(
-    this: CombinedRTCompilerOutputContainer, previous: RTCompilerOutputContainer
+    this: CombinedRTCompilerOutputContainer,
+    previous: RTCompilerOutputContainer,
+    previous_step_indices: list[int],
 ):
     get_compiler_hooks(this.device_class).linker().repeat_previous(
-        this.combined_output, previous.codegen_output
+        this.combined_output, previous.codegen_output, previous_step_indices
     )
 
 

@@ -9,6 +9,7 @@ using Section = import "section.capnp";
 using Sweep = import "sweep.capnp";
 using DeviceSetup = import "device_setup.capnp";
 using Calibration = import "calibration.capnp";
+using Coprocessor = import "coprocessor.capnp";
 
 # Schema version. The schema is in 0.x development mode:
 # no compatibility guarantees exist between 0.x releases.
@@ -48,6 +49,15 @@ struct Experiment {
   acquisitionHandles @6 :List(AcquisitionHandle);
   # Pre-declared acquisition handles referenced by `AcquireOp.handle` and
   # `MatchSection.handle`.
+
+  coprocessors @7 :List(Coprocessor.Coprocessor);
+  # HQCS coprocessor handles declared in the experiment.
+
+  streams @8 :List(Coprocessor.Stream);
+  # HQCS streams.
+
+  variables @9 :List(Coprocessor.Variable);
+  # HQCS runtime variables.
 }
 
 struct AcquisitionHandle {

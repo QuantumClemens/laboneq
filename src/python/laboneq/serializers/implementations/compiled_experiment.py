@@ -6,6 +6,8 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING
 
+import pybase64
+
 from laboneq._version import get_version
 from laboneq.core.types.compiled_experiment import CompiledExperiment
 from laboneq.data.scheduled_experiment import ScheduledExperiment
@@ -57,6 +59,21 @@ def _reshape_v1_scheduled_experiment_dict(data: dict) -> dict:
     return data
 
 
+def _unstructure_payload_overrides(overrides: dict[str, bytes]) -> dict[str, str]:
+    """Base64-encode payload_overrides to a JSON-safe dict of ascii strings."""
+    return {
+        label: pybase64.b64encode(payload).decode("ascii")
+        for label, payload in overrides.items()
+    }
+
+
+def _structure_payload_overrides(d: dict[str, str]) -> dict[str, bytes]:
+    """Base64-decode payload_overrides from a JSON-safe dict."""
+    return {
+        label: pybase64.b64decode(value.encode("ascii")) for label, value in d.items()
+    }
+
+
 @serializer(types=CompiledExperiment, public=True)
 class CompiledExperimentSerializer(VersionedClassSerializer[CompiledExperiment]):
     SERIALIZER_ID = "laboneq.serializers.implementations.CompiledExperimentSerializer"
@@ -83,6 +100,9 @@ class CompiledExperimentSerializer(VersionedClassSerializer[CompiledExperiment])
                 "experiment": experiment,
                 "experiment_dict": experiment_dict,
                 "scheduled_experiment": scheduled_experiment,
+                "payload_overrides": _unstructure_payload_overrides(
+                    obj.payload_overrides
+                ),
             },
         }
 
@@ -130,12 +150,15 @@ class CompiledExperimentSerializer(VersionedClassSerializer[CompiledExperiment])
                 ScheduledExperimentModel,
             )
 
-        return CompiledExperiment(
+        compiled = CompiledExperiment(
             device_setup=device_setup,
             experiment=experiment,
             experiment_dict=experiment_dict,
             scheduled_experiment=scheduled_experiment,
         )
+        raw_overrides = serialized_data["__data__"].get("payload_overrides") or {}
+        compiled.payload_overrides = _structure_payload_overrides(raw_overrides)
+        return compiled
 
     @classmethod
     def from_dict_v2(
@@ -158,7 +181,6 @@ class CompiledExperimentSerializer(VersionedClassSerializer[CompiledExperiment])
                 ),
                 ScheduledExperimentModel,
             )
-
         return CompiledExperiment(
             device_setup=device_setup,
             experiment=experiment,

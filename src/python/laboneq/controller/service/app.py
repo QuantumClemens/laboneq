@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
     from fastapi import Request, Response
 
+    from laboneq.data.instrument_topology import InstrumentTopology
     from laboneq.dsl.device import DeviceSetup
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,8 @@ def create_app(
     dataserver: tuple[str, str] | None = None,
     do_emulation: bool = False,
     reset_devices: bool = False,
+    instrument_topology: InstrumentTopology | None = None,
+    public_url: str | None = None,
 ) -> FastAPI:
     """Create the FastAPI application.
 
@@ -104,6 +107,13 @@ def create_app(
         dataserver: ``(host, port)`` of the hardware server (SCM).
         do_emulation: Run in emulation mode (no real hardware); requires device_setup.
         reset_devices: Reset hardware on the first connection.
+        public_url: Base URL under which clients reach this service, e.g.
+            ``https://lab.example.com/laboneq``.  Overrides the address derived
+            from the request and its forwarded headers, which is what the
+            instrument topology advertises as the dispatch address (see
+            `laboneq.controller.service.advertised_url`).  Needed only when the
+            service sits behind a proxy that forwards no ``Forwarded`` or
+            ``X-Forwarded-*`` headers.
 
     Returns:
         Configured FastAPI application.
@@ -136,6 +146,7 @@ def create_app(
             dataserver=dataserver,
             do_emulation=do_emulation,
             reset_devices=reset_devices,
+            instrument_topology=instrument_topology,
         )
         yield
 
@@ -147,6 +158,8 @@ def create_app(
         docs_url="/docs",
         redoc_url="/redoc",
     )
+
+    app.state.public_url = public_url
 
     @app.exception_handler(ServiceError)
     async def _handle_service_error(

@@ -110,6 +110,7 @@ class NtCompilerExecutor(ExecutorBase):
             frozenset, RTCompilerOutputContainer
         ] = {}
         self._last_compiler_output: RTCompilerOutputContainer | None = None
+        self._last_step_indices: list[int] | None = None
         self._required_parameters: set[str] | None = None
         self._combined_compiler_output: CombinedRTCompilerOutputContainer | None = None
 
@@ -175,8 +176,11 @@ class NtCompilerExecutor(ExecutorBase):
 
                 self._last_compiler_output = new_compiler_output
                 rt_linker.repeat_previous(
-                    self._combined_compiler_output, self._last_compiler_output
+                    self._combined_compiler_output,
+                    self._last_compiler_output,
+                    self._last_step_indices,
                 )
+                self._last_step_indices = list(self._iteration_stack.nt_loop_indices())
                 if not self._skipped_last_compilation:
                     _logger.info("Skipping compilation for next step(s)...")
                 self._skipped_last_compilation = True
@@ -223,6 +227,7 @@ class NtCompilerExecutor(ExecutorBase):
             delegate.after_compilation_run(new_compiler_output, nt_step_indices)
 
         self._last_compiler_output = new_compiler_output
+        self._last_step_indices = nt_step_indices
 
         time_delta = time.perf_counter() - time_start
 

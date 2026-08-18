@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
-from zhinst.utils.shfqa.multistate import QuditSettings  # type: ignore[import-untyped]
 
 from laboneq.controller.attribute_value_tracker import (
     AttributeName,
@@ -128,6 +127,11 @@ def _calc_theoretical_assignment_vec(num_weights: int) -> np.ndarray:
     zhinst.utils.QuditSettings was used to calculate the weights
     and the first d-1 weights were selected as integration kernels.
     """
+    # Imported lazily: `zhinst.utils` pulls in scipy.io & co. on import.
+    from zhinst.utils.shfqa.multistate import (  # type: ignore[import-untyped]
+        QuditSettings,
+    )
+
     num_states = num_weights + 1
     qs = QuditSettings(
         np.linspace(start=0.0, stop=1.0, num=num_states).reshape(num_states, 1)

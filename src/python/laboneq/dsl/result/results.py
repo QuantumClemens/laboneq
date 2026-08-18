@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
     from ..calibration import Calibration
     from .acquired_result import AcquiredResult
+    from .logged_variable import LoggedVariable
 
 
 ErrorList: TypeAlias = list[tuple[list[int], str, str]]
@@ -101,6 +102,7 @@ class Results:
     experiment: Experiment = attrs.field(default=None)
     device_setup: DeviceSetup = attrs.field(default=None)
     acquired_results: AcquiredResults = attrs.field(factory=AcquiredResults)
+    variable_results: dict[str, LoggedVariable] = attrs.field(factory=dict)
     neartime_callback_results: dict[str, list[Any]] = attrs.field(default=None)
     execution_errors: list[tuple[list[int], str, str]] = attrs.field(factory=list)
     pipeline_jobs_timestamps: dict[str, list[float]] = attrs.field(factory=dict)
@@ -168,6 +170,7 @@ class Results:
             experiment=copy.deepcopy(self.experiment),
             device_setup=copy.deepcopy(self.device_setup),
             acquired_results=copy.deepcopy(self.acquired_results),
+            variable_results=copy.deepcopy(self.variable_results),
             neartime_callback_results=copy.deepcopy(self.neartime_callback_results),
             execution_errors=copy.deepcopy(self.execution_errors),
             pipeline_jobs_timestamps=copy.deepcopy(self.pipeline_jobs_timestamps),
@@ -407,16 +410,19 @@ def combine_results(results: Sequence[Results]) -> Results:
     execution_errors = []
     neartime_callback_results = {}
     pipeline_jobs_timestamps = {}
+    variable_results: dict = {}
 
     for res in results:
         acquired_results.update(res.acquired_results)
         execution_errors.extend(res.execution_errors or [])
         neartime_callback_results.update(res.neartime_callback_results or {})
         pipeline_jobs_timestamps.update(res.pipeline_jobs_timestamps or {})
+        variable_results.update(res.variable_results or {})
 
     return Results(
         acquired_results=acquired_results,
         execution_errors=execution_errors,
         neartime_callback_results=neartime_callback_results,
         pipeline_jobs_timestamps=pipeline_jobs_timestamps,
+        variable_results=variable_results,
     )

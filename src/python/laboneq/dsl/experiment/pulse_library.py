@@ -43,8 +43,26 @@ def register_pulse_functional(sampler: Callable, name: str | None = None):
         - dictionaries of the above with `str` keys
 
     The lists and dictionaries may be nested and need not have homogeneous value types.
+    A `laboneq.dsl.Parameter`, however, must be the pulse parameter value itself: nested inside
+    a list or dictionary it is not resolved, and reaches the sampler as the `Parameter` object
+    instead of the value of the current sweep step.
 
-    Other value types are not supported by the LabOne Q serializer.
+    Other value types are not supported by the LabOne Q serializer. To pass a value of
+    another type, convert it to a supported one (numpy arrays: `.tolist()`), or serialize
+    it to `bytes` and deserialize it inside the sampler:
+
+    ``` py
+
+        import numpy as np
+
+        @pulse_library.register_pulse_functional
+        def my_pulse(x, **kwargs):
+            # bytes -> ndarray, preserving the exact dtype
+            coefficients = np.frombuffer(kwargs["coefficients"], dtype=np.float64)
+            return np.polyval(coefficients, x)
+
+        p = my_pulse("p", coefficients=np.array([0.1, -0.5, 1.0]).tobytes())
+    ```
 
     In addition, ``pulse_params``  also contains the following keys:
 

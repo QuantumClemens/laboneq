@@ -17,7 +17,6 @@ use laboneq_scheduler::{
 
 use crate::compiler_backend::{CodeGenArtifact, DynCompilerBackend, PreprocessedBackendData};
 use crate::experiment::Experiment;
-use crate::experiment_context::ExperimentContext;
 use crate::prepare_schedule;
 use crate::signal_view::signal_views;
 
@@ -25,7 +24,6 @@ pub(crate) struct RealTimeCompilerInput<'a> {
     pub experiment: &'a Experiment,
     pub device_setup: &'a DeviceSetup,
     pub compiler_settings: &'a CompilerSettings,
-    pub context: &'a ExperimentContext,
     pub parameters: HashMap<ParameterUid, NumericLiteral>,
     pub chunking_info: Option<(usize, usize)>,
     pub backend: &'a dyn DynCompilerBackend,
@@ -67,9 +65,12 @@ pub(crate) fn compile_realtime(
         &experiment.root,
         SchedulerContext {
             id_store: &experiment.id_store,
-            parameters: experiment.parameters.clone(),
+            parameters: experiment
+                .parameters
+                .iter()
+                .map(|p| (p.uid, p.clone()))
+                .collect(),
             signals: &views,
-            handle_to_signal: input.context.handle_to_signal(),
         },
         &parameter_store,
         chunking_info,
@@ -82,7 +83,7 @@ pub(crate) fn compile_realtime(
         root: result.root,
         parameters: result.parameters.values().cloned().collect(),
         pulses: experiment.pulses.values().cloned().collect(),
-        acquisition_type: *input.context.acquisition_type(),
+        acquisition_type: result.acquisition_type,
         id_store: &experiment.id_store,
         device_setup: input.device_setup,
     };

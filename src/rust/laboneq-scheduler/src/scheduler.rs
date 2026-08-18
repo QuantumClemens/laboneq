@@ -21,12 +21,11 @@ use crate::ExperimentContext;
 use crate::FeedbackCalculator;
 use crate::adjust_acquire_lengths::adjust_acquisition_lengths;
 use crate::analysis::validate_ir;
-use crate::chunk_experiment::chunk_experiment;
+use crate::chunk_experiment::slice_chunked_parameters;
 use crate::error::Result;
 use crate::ir_unroll::unroll_loops;
 use crate::lower_experiment::lower_to_ir;
 use crate::parameter_store::ParameterStore;
-use crate::resolve_nt_match_case::resolve_nt_match_case;
 use crate::resolve_parameters::resolve_parameters;
 use crate::resolve_repetition_mode::resolve_repetition_mode;
 use crate::scheduled_to_ir::scheduled_node_to_ir_node;
@@ -39,6 +38,7 @@ pub struct ScheduledExperiment {
     pub root: IrNode,
     /// Parameters used in the scheduled experiment
     pub parameters: HashMap<ParameterUid, SweepParameter>,
+    pub acquisition_type: AcquisitionType,
 }
 
 /// Schedule real time part of an Experiment
@@ -59,19 +59,17 @@ pub fn schedule_experiment<T: SignalInfo>(
 
     validate_strict_before_realtime(root)?;
 
-    let mut real_time_root = find_real_time_root(root)
-        .expect("Experiment has no real-time section")
-        .clone();
-    resolve_nt_match_case(&mut real_time_root, near_time_parameters);
+    let real_time_root = find_real_time_root(root).expect("Experiment has no real-time section");
+
     // TODO: Preferably move chunking after scheduling after Rust migration.
     // Currently not possible as the scheduling in called per chunk.
     if let Some(chunking_info) = &chunking_info {
-        chunk_experiment(&mut real_time_root, &mut context.parameters, chunking_info)?;
+        slice_chunked_parameters(real_time_root, &mut context.parameters, chunking_info)?;
     }
     // TODO: Where in the IR tree `acquisition_type` should be stored?
     let acquisition_type =
-        find_acquisition_type(&real_time_root).expect("Unspecified acquisition type.");
-    let mut scheduled_node = lower_to_ir(&real_time_root, &context, near_time_parameters)?;
+        find_acquisition_type(real_time_root).expect("Unspecified acquisition type.");
+    let mut scheduled_node = lower_to_ir(real_time_root, &context, near_time_parameters)?;
 
     resolve_repetition_mode(&mut scheduled_node)?;
     validate_ir(&scheduled_node)?;
@@ -95,7 +93,8 @@ pub fn schedule_experiment<T: SignalInfo>(
     let ir_node = scheduled_node_to_ir_node(scheduled_node);
     let exp = ScheduledExperiment {
         root: ir_node,
-        parameters: context.parameters.clone(),
+        parameters: context.parameters,
+        acquisition_type,
     };
     Ok(exp)
 }

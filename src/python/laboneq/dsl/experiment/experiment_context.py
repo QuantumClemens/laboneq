@@ -6,13 +6,14 @@ from __future__ import annotations
 from copy import copy
 from functools import wraps
 
+from laboneq.core.exceptions import LabOneQException
+from laboneq.dsl.experiment import Experiment
 from laboneq.dsl.experiment.context import (
     Context,
     pop_context,
     push_context,
     reversed_iter_contexts,
 )
-from laboneq.dsl.experiment.experiment import Experiment
 from laboneq.dsl.experiment.uid_generator import UidGenerator
 
 
@@ -24,6 +25,18 @@ class ExperimentContext(Context):
 
     def add(self, section):
         self.experiment.sections.append(section)
+
+    def register_coprocessor(self, coprocessor) -> None:
+        """Register a Coprocessor handle on the current experiment."""
+        if coprocessor.label in self.experiment.coprocessors:
+            raise LabOneQException(
+                f"Coprocessor '{coprocessor.label}' defined multiple times"
+            )
+        self.experiment.coprocessors[coprocessor.label] = coprocessor
+
+    def register_stream(self, stream) -> None:
+        """Register an HQCS stream on the current experiment."""
+        self.experiment.streams.append(stream)
 
     def uid(self, prefix: str) -> str:
         """Generate a unique identifier.

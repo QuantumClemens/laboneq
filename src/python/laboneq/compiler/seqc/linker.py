@@ -33,9 +33,14 @@ if TYPE_CHECKING:
     from laboneq.compiler.common.integration_times import IntegrationTimes
     from laboneq.core.types.enums.wave_type import WaveType
     from laboneq.data.artifacts_qccs import (
+        AcquireLength,
         AwgWeights,
         CodegenWaveform,
+        Initialization,
+        IntegratorAllocation,
+        OscillatorParam,
         PulseMapEntry,
+        RealtimeExecutionInit,
         ResultSource,
     )
     from laboneq.data.scheduled_experiment import CompilerArtifact
@@ -77,6 +82,11 @@ class CombinedRTOutputSeqC(CombinedOutput):
     device_properties: list[codegen_rs.DeviceProperties] = field(default_factory=list)
     ppc_settings: list[codegen_rs.PpcSettings] = field(default_factory=list)
     result_lengths: dict[AwgKey, int] = field(default_factory=dict)
+    initializations: list[Initialization] = field(default_factory=list)
+    realtime_execution_init: list[RealtimeExecutionInit] = field(default_factory=list)
+    oscillator_params: list[OscillatorParam] = field(default_factory=list)
+    integrator_allocations: list[IntegratorAllocation] = field(default_factory=list)
+    acquire_lengths: list[AcquireLength] = field(default_factory=list)
 
     def get_artifacts(self) -> CompilerArtifact:
         src: list[dict[str, str | bytes]] = []
@@ -98,22 +108,26 @@ class CombinedRTOutputSeqC(CombinedOutput):
             integration_weights=self.integration_weights,
             parameter_phase_increment_map=self.parameter_phase_increment_map,
             result_handle_maps=self.result_handle_maps,
+            initializations=self.initializations,
+            realtime_execution_init=self.realtime_execution_init,
+            oscillator_params=self.oscillator_params,
+            integrator_allocations=self.integrator_allocations,
+            acquire_lengths=self.acquire_lengths,
         )
 
     def get_raw_acquire_length(
         self,
         signal_id: str,
-        handle: str,  # unused; all scope acquisitions must share the same length regardless of handle
     ) -> int:
         integration_info = self.integration_times.signal_infos.get(signal_id)
         assert integration_info is not None
         return integration_info.length_in_samples
 
-    @staticmethod
+    @property
     def total_execution_time(self) -> float:
         return self._total_execution_time
 
-    @staticmethod
+    @property
     def max_execution_time_per_step(self) -> float:
         return self._max_execution_time_per_step
 
@@ -415,7 +429,11 @@ class SeqCLinker(ILinker):
         return neartime_execution_steps
 
     @staticmethod
-    def repeat_previous(this: CombinedRTOutputSeqC, previous: SeqCGenOutput):
+    def repeat_previous(
+        this: CombinedRTOutputSeqC,
+        previous: SeqCGenOutput,
+        previous_step_indices: list[int],
+    ):
         this._total_execution_time += previous.total_execution_time
 
     @staticmethod

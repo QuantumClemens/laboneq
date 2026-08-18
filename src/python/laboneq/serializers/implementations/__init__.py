@@ -27,6 +27,7 @@ __all__ = [  # noqa: RUF022
     "TaskOptionsSerializer",
     "NumpyArraySerializer",
     "WorkflowNamespaceSerializer",
+    "InstrumentTopologySerializer",
 ]
 
 from .calibration import CalibrationSerializer
@@ -37,6 +38,7 @@ from .compiled_experiment import (
 from .device_setup import DeviceSetupSerializer
 from .enums import LabOneQEnumSerializer
 from .experiment import ExperimentSerializer
+from .instrument_topology import InstrumentTopologySerializer
 from .numpy_array import NumpyArraySerializer
 from .qpu import QPUSerializer
 from .quantum_element import QuantumElementSerializer, QuantumParametersSerializer

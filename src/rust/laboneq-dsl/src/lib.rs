@@ -5,6 +5,7 @@ use crate::operation::Operation;
 
 pub mod device_setup;
 pub mod experiment_signal;
+pub mod hqcs;
 pub mod node;
 pub mod operation;
 pub mod setup_description_qccs;

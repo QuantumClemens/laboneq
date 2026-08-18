@@ -853,6 +853,9 @@ impl<'a> IrToCodeIrLowerer<'a> {
                     prng_sample,
                 }
             }
+            hir::MatchTarget::Variable(_) => {
+                panic!("Match sections with a coprocessor-variable target are not yet supported.")
+            }
         }
     }
 

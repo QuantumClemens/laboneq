@@ -7,6 +7,7 @@ use indexmap::IndexMap;
 use laboneq_common::named_id::NamedIdStore;
 use laboneq_compiler_py::compiler_backend::ExperimentView;
 use laboneq_compiler_py::compiler_backend::ParameterValues;
+use laboneq_dsl::ExperimentNode;
 use laboneq_dsl::device_setup::Instrument;
 use laboneq_dsl::device_setup::SetupDescription;
 use laboneq_dsl::setup_description_qccs::AuxiliaryDevice;
@@ -17,6 +18,8 @@ use laboneq_dsl::types::DeviceUid;
 
 use laboneq_dsl::types::ParameterUid;
 use laboneq_dsl::types::PhysicalChannelUid;
+use laboneq_dsl::types::PulseDef;
+use laboneq_dsl::types::PulseUid;
 use laboneq_dsl::types::SignalUid;
 use laboneq_error::laboneq_error;
 
@@ -41,6 +44,9 @@ pub(crate) struct DeviceChannel {
 
 pub(crate) struct ExperimentViewWrapper<'a> {
     pub id_store: &'a mut NamedIdStore,
+
+    pub root: &'a ExperimentNode,
+    pub pulses: &'a HashMap<PulseUid, PulseDef>,
 
     // Device setup properties
     pub instruments: IndexMap<DeviceUid, Instrument>,
@@ -94,6 +100,8 @@ impl<'a> ExperimentViewWrapper<'a> {
         }
         let exp = ExperimentViewWrapper {
             id_store: experiment.id_store,
+            root: experiment.root,
+            pulses: experiment.pulses,
             instruments: instrument_map,
             auxiliary_devices: setup.auxiliary_devices,
             signals,

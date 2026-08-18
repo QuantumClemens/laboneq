@@ -8,31 +8,33 @@ use pyo3::types::PyDict;
 use pyo3::{PyTypeInfo, intern};
 
 use laboneq_common::compiler_settings::CompilerSettings;
+use laboneq_dsl::types::{HandleUid, SignalUid};
 use laboneq_error::{
     LabOneQError, PyErrorWithContext, ResourceLimitationError, WithContext, bail_resource_usage,
 };
 
 use crate::ProcessedExperiment;
 use crate::chunking_mode::{ChunkingMode, collect_chunking_mode};
-use crate::compiler_backend::CompilerBackend;
-use crate::execution::{Statement, create_execution};
+use crate::compiled_experiment::{
+    CompiledExperiment, ExecutionTiming, Metadata, RealTimeProperties, ResultShapes,
+};
+use crate::compiler_backend::{CombinedOutput, CompilerBackend};
+use crate::execution::{Execution, create_execution};
 use crate::py_execution::create_py_execution;
 use crate::py_experiment::ExperimentPy;
+use crate::py_pulse_sheet_schedule::PulseSheetSchedulePy;
+use crate::real_time_loop::real_time_loop_properties;
 
-pub(crate) fn run_compilation<B>(
+pub(crate) fn run_compilation<B: CompilerBackend>(
     py: Python<'_>,
     backend: B,
     processed: ProcessedExperiment<B::Output>,
     compiler_settings: CompilerSettings,
-) -> Result<Bound<'_, PyAny>, LabOneQError>
-where
-    B: CompilerBackend + Send + Sync + 'static,
-    B::Output: Send + Sync + 'static,
-    B::CodeGenArtifact: Send + Sync + 'static,
-{
+) -> Result<CompiledExperiment<B::CompilerArtifact>, LabOneQError> {
     let execution = create_execution(&processed.inner)?;
     let chunking_mode = collect_chunking_mode(&processed.inner)?;
-    let scheduled_experiment = compile_whole_or_with_chunks(
+
+    let compiled_experiment = compile_whole_or_with_chunks(
         py,
         backend,
         processed,
@@ -40,7 +42,8 @@ where
         execution,
         chunking_mode,
     )?;
-    Ok(scheduled_experiment)
+
+    Ok(compiled_experiment)
 }
 
 const RESOURCE_LIMIT_MSG: &str = "Compilation error - resource limitation exceeded.\n\
@@ -59,38 +62,41 @@ const AUTO_CHUNK_EXHAUSTED_MSG: &str = "Automatic chunking was not able to find 
     - Chunking another sweep (e.g. in case of nested sweeps, enable chunking for the inner one)\n\
     - Find ways suitable for your use case to reduce the size of the program in one iteration";
 
-fn compile_whole_or_with_chunks<'py, B>(
-    py: Python<'py>,
+fn compile_whole_or_with_chunks<B: CompilerBackend>(
+    py: Python<'_>,
     backend: B,
     processed: ProcessedExperiment<B::Output>,
     compiler_settings: CompilerSettings,
-    execution: Vec<Statement>,
+    execution: Execution,
     chunking_mode: Option<ChunkingMode>,
-) -> Result<Bound<'py, PyAny>, LabOneQError>
-where
-    B: CompilerBackend + Send + Sync + 'static,
-    B::Output: Send + Sync + 'static,
-    B::CodeGenArtifact: Send + Sync + 'static,
-{
-    // Prepare the Python objects
+) -> Result<CompiledExperiment<B::CompilerArtifact>, LabOneQError> {
     let device_class = backend.device_class();
 
+    let backend_typed = backend.clone();
+    let rt_properties = real_time_loop_properties(&processed.inner.root)?;
+    let id_store = Arc::clone(&processed.inner.id_store);
+    let py_object_store = Arc::clone(&processed.inner.py_object_store);
+    let sweep_parameters = processed.inner.parameters.clone();
+
+    let raw_acquisitions: Vec<(SignalUid, HandleUid)> =
+        processed.result_shapes.raw_acquisitions().collect();
+
+    // Prepare the Python objects
     let exp_py = ExperimentPy {
         inner: processed.inner,
         device_setup: processed.device_setup,
-        context: processed.context,
         delay_compensation: processed.delay_compensation,
         compiler_settings: compiler_settings.clone(),
         backend_data: Arc::new(processed.backend_data),
         backend: Arc::new(backend),
-        result_shapes: processed.result_shapes,
     };
 
-    let execution = create_py_execution(
+    let execution_py = create_py_execution(
         py,
-        execution,
-        &exp_py.inner.id_store,
-        &exp_py.inner.py_object_store,
+        &execution,
+        &sweep_parameters,
+        &id_store,
+        &py_object_store,
     )?
     .into_pyobject(py)
     .map_err(LabOneQError::from_err)?;
@@ -99,56 +105,65 @@ where
     let bound_exp_py = exp_py.into_pyobject(py)?;
 
     // Run the compilation
-    let compiled_output = match chunking_mode {
+    let (compiled_output, chunk_count) = match chunking_mode {
         None => call_compile(
             py,
             &bound_exp_py,
-            &execution,
+            &execution_py,
             None,
             device_class,
             &compiler_settings,
         )
+        .map(|result| (result, None))
         .map_err(|e| wrap_resource_limitation_error(e, RESOURCE_LIMIT_MSG)),
-        Some(ChunkingMode::Manual { chunk_count }) => call_compile(
-            py,
-            &bound_exp_py,
-            &execution,
-            Some(chunk_count.get()),
-            device_class,
-            &compiler_settings,
-        )
-        .map_err(|e| wrap_resource_limitation_error(e, RESOURCE_LIMIT_MSG)),
+        Some(ChunkingMode::Manual { chunk_count }) => {
+            let chunk_count = sanitize_chunk_count(chunk_count.get());
+            call_compile(
+                py,
+                &bound_exp_py,
+                &execution_py,
+                chunk_count,
+                device_class,
+                &compiler_settings,
+            )
+            .map(|result| (result, chunk_count))
+            .map_err(|e| wrap_resource_limitation_error(e, RESOURCE_LIMIT_MSG))
+        }
         Some(ChunkingMode::Auto(mut auto_chunking)) => loop {
-            let chunk_count = auto_chunking.initial_chunk_count.get();
-            laboneq_log::debug!("Attempting to compile with {} chunks", chunk_count);
+            let raw_chunk_count = auto_chunking.initial_chunk_count.get();
+            let chunk_count = sanitize_chunk_count(raw_chunk_count);
+            laboneq_log::debug!("Attempting to compile with {} chunks", raw_chunk_count);
             let result = call_compile(
                 py,
                 &bound_exp_py,
-                &execution,
-                Some(chunk_count),
+                &execution_py,
+                chunk_count,
                 device_class,
                 &compiler_settings,
             );
 
             match result {
                 Ok(result) => {
-                    laboneq_log::info!("Auto-chunked sweep divided into {} chunks", chunk_count);
-                    break Ok(result);
+                    laboneq_log::info!(
+                        "Auto-chunked sweep divided into {} chunks",
+                        raw_chunk_count
+                    );
+                    break Ok((result, chunk_count));
                 }
                 Err(LabOneQError::ResourceExhaustion(e)) => {
                     laboneq_log::debug!(
                         "The attempt with {} chunks failed with resource exhaustion: {}",
-                        chunk_count,
+                        raw_chunk_count,
                         e
                     );
-                    if chunk_count == auto_chunking.iterations.get() {
+                    if raw_chunk_count == auto_chunking.iterations.get() {
                         return Err(wrap_resource_limitation_error(
                             LabOneQError::ResourceExhaustion(e),
                             AUTO_CHUNK_EXHAUSTED_MSG,
                         ));
                     }
                     let multiplier = e.usage.unwrap_or(2.0).ceil().max(2.0) as u32;
-                    let new_requested = chunk_count.saturating_mul(multiplier);
+                    let new_requested = raw_chunk_count.saturating_mul(multiplier);
                     auto_chunking = auto_chunking.resize(
                         new_requested
                             .try_into()
@@ -159,9 +174,50 @@ where
             }
         },
     }?;
-    let scheduled_experiment_py =
-        build_scheduled_experiment_py(py, compiled_output, &processed.device_setup_fingerprint)?;
-    Ok(scheduled_experiment_py)
+
+    let combined_output = backend_typed.combined_output_from_py(&compiled_output.artifacts)?;
+
+    // Resolve the raw acquisition lengths and result shapes from the combined output.
+    let raw_acquisition_lengths =
+        combined_output.raw_acquisition_lengths(&raw_acquisitions, &id_store)?;
+    let handle_result_shapes = processed
+        .result_shapes
+        .get_shapes(raw_acquisition_lengths.into_iter())?;
+    let execution_timing = ExecutionTiming {
+        total_execution_time: combined_output.total_execution_time()?,
+        max_step_execution_time: combined_output.max_execution_time_per_step()?,
+    };
+
+    let backend_output = backend_typed.finalize(combined_output)?;
+
+    let output = CompiledExperiment {
+        device_setup_fingerprint: processed.device_setup_fingerprint,
+        artifacts: backend_output.artifacts,
+        execution_timing,
+        metadata: Metadata {
+            producer_version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+        pulse_sheet_schedule: compiled_output
+            .schedule
+            .map(|obj| {
+                obj.extract::<PyRefMut<PulseSheetSchedulePy>>()
+                    .map_err(PyErr::from)
+            })
+            .transpose()?
+            .map(|mut s| s.take_inner()),
+        execution,
+        real_time_properties: RealTimeProperties {
+            acquisition_type: rt_properties.acquisition_type,
+            averaging_mode: rt_properties.averaging_mode,
+            shots: rt_properties.shots,
+            chunk_count,
+        },
+        result_shapes: ResultShapes {
+            handle_result_shapes,
+        },
+        sweep_parameters,
+    };
+    Ok(output)
 }
 
 fn create_compiler_settings_py<'py>(
@@ -180,6 +236,11 @@ fn create_compiler_settings_py<'py>(
     )?;
     let compiled_settings = compiler_settings_py.call((), Some(&kwargs))?;
     Ok(compiled_settings)
+}
+
+/// A chunk count of 1 is equivalent to not chunking at all.
+fn sanitize_chunk_count(chunk_count: u32) -> Option<u32> {
+    Some(chunk_count).filter(|&c| c != 1)
 }
 
 fn wrap_resource_limitation_error(error: LabOneQError, error_msg: &'static str) -> LabOneQError {
@@ -246,49 +307,4 @@ fn call_compile<'py>(
 struct CompilationOutputPy<'py> {
     artifacts: Bound<'py, PyAny>,
     schedule: Option<Bound<'py, PyAny>>,
-    execution: Bound<'py, PyAny>,
-    rt_loop_properties: Bound<'py, PyAny>,
-    result_shape_info: Bound<'py, PyAny>,
-    total_execution_time: Bound<'py, PyAny>,
-    max_step_execution_time: Bound<'py, PyAny>,
-    versions: Bound<'py, PyAny>,
-}
-
-/// Builds the `ScheduledExperiment` Python object.
-fn build_scheduled_experiment_py<'py>(
-    py: Python<'py>,
-    compilation_output: CompilationOutputPy<'py>,
-    device_setup_fingerprint: &str,
-) -> PyResult<Bound<'py, PyAny>> {
-    let scheduled_experiment_class = py
-        .import(intern!(py, "laboneq.data.scheduled_experiment"))?
-        .getattr(intern!(py, "ScheduledExperiment"))?;
-
-    let kwargs = PyDict::new(py);
-    kwargs.set_item(
-        intern!(py, "device_setup_fingerprint"),
-        device_setup_fingerprint,
-    )?;
-    kwargs.set_item(intern!(py, "artifacts"), compilation_output.artifacts)?;
-    kwargs.set_item(intern!(py, "schedule"), compilation_output.schedule)?;
-    kwargs.set_item(intern!(py, "execution"), compilation_output.execution)?;
-    kwargs.set_item(
-        intern!(py, "rt_loop_properties"),
-        compilation_output.rt_loop_properties,
-    )?;
-    kwargs.set_item(
-        intern!(py, "result_shape_info"),
-        compilation_output.result_shape_info,
-    )?;
-    kwargs.set_item(
-        intern!(py, "total_execution_time"),
-        compilation_output.total_execution_time,
-    )?;
-    kwargs.set_item(
-        intern!(py, "max_step_execution_time"),
-        compilation_output.max_step_execution_time,
-    )?;
-    kwargs.set_item(intern!(py, "versions"), compilation_output.versions)?;
-    let scheduled_experiment = scheduled_experiment_class.call((), Some(&kwargs))?;
-    Ok(scheduled_experiment)
 }

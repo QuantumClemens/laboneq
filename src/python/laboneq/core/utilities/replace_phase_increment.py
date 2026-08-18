@@ -17,9 +17,7 @@ from laboneq.data.artifacts_qccs import (
 )
 
 if typing.TYPE_CHECKING:
-    from laboneq.core.types import CompiledExperiment
     from laboneq.data.scheduled_experiment import CompilerArtifact
-    from laboneq.dsl.parameter import Parameter
 
 
 def calc_ct_replacement(
@@ -78,23 +76,3 @@ def calc_ct_replacement(
             assert ct_entry["phase1"]["increment"] is True
 
     return list(new_tables_by_key.values())
-
-
-def replace_phase_increment(
-    target: CompiledExperiment,
-    parameter: str | Parameter,
-    new_value: int | float,
-):
-    """Set the phase increment driven by the given parameter to the new value.
-
-    Args:
-        target: See CompiledExperiment.replace_phase_increment for details.
-        parameter: The parameter that will be replaced.
-        new_value: The replacement value of the phase increment.
-    """
-
-    if not isinstance(parameter, str):
-        parameter = parameter.uid
-
-    artifacts = target.scheduled_experiment.artifacts
-    calc_ct_replacement(artifacts, parameter, new_value, in_place=True)

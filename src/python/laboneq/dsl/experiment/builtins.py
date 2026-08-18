@@ -52,6 +52,7 @@ if typing.TYPE_CHECKING:
     )
     from laboneq.dsl.experiment.pulse import Pulse
     from laboneq.dsl.prng import PRNG, PRNGSample
+    from laboneq.dsl.variable import Variable
 
 __all__ = [
     "acquire",
@@ -318,8 +319,9 @@ def acquire_loop_rt(
 
 
 def match(
-    handle: str | None = None,
+    handle: str | Variable | None = None,
     *,
+    variable: Variable | None = None,
     user_register: int | None = None,
     prng_sample: PRNGSample | None = None,
     sweep_parameter: Parameter | None = None,
@@ -345,6 +347,8 @@ def match(
             See [Section.measure][laboneq.dsl.experiment.section.Section.measure]
             and [Section.acquire][laboneq.dsl.experiment.section.Section.acquire]
             for where handles are specified.
+        variable:
+            HQCS coprocessor `Variable` on which to match.
         user_register:
             User register on which to match.
         prng_sample:
@@ -370,6 +374,7 @@ def match(
         uid=uid,
         name=name,
         handle=handle,
+        variable=variable,
         user_register=user_register,
         prng_sample=prng_sample,
         sweep_parameter=sweep_parameter,

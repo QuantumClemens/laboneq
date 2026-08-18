@@ -14,6 +14,7 @@ from laboneq.core.types.enums import PhysicalChannelType
 from laboneq.core.types.enums.io_direction import IODirection
 from laboneq.core.types.enums.io_signal_type import IOSignalType
 from laboneq.core.types.enums.reference_clock_source import ReferenceClockSource
+from laboneq.dsl.coprocessor.inventory import CoprocessorInventoryEntry
 from laboneq.dsl.device.connection import Connection
 from laboneq.dsl.device.instruments.hdawg import HDAWG
 from laboneq.dsl.device.instruments.nonqc import NonQC
@@ -242,6 +243,12 @@ class LogicalSignalGroupModel:
     uid: str | None
     logical_signals: dict[str, LogicalSignalModel]
     _target_class: ClassVar[Type] = LogicalSignalGroup
+
+
+@attrs.define
+class CoprocessorInventoryEntryModel:
+    key: str
+    _target_class: ClassVar[Type] = CoprocessorInventoryEntry
 
 
 def make_converter():

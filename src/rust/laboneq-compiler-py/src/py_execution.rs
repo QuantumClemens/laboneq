@@ -7,21 +7,38 @@ use pyo3::{IntoPyObjectExt, intern, prelude::*, types::PyDict};
 
 use laboneq_common::{named_id::NamedIdStore, types::Literal};
 use laboneq_dsl::operation::{ExternalOrValue, ValueEntry};
-use laboneq_dsl::types::{ExternalParameterUid, ValueOrParameter};
+use laboneq_dsl::types::{ExternalParameterUid, SweepParameter, ValueOrParameter};
 use laboneq_py_utils::py_export::{numeric_literal_to_py, value_to_py};
-use laboneq_py_utils::py_object_interner::PyObjectInterner;
+use laboneq_py_utils::py_object_store::PyObjectStore;
 use numeric_array::NumericArray;
 
-use crate::execution::Statement;
+use crate::execution::{Execution, Statement};
 
 /// Creates a Python execution from a list of statements.
 ///
 /// The type of the returned Python object is `laboneq.executor.executor.Statement`.
 pub(crate) fn create_py_execution<'py>(
     py: Python<'py>,
-    statements: Vec<Statement>,
+    execution: &Execution,
+    sweep_parameters: &[SweepParameter],
     id_store: &NamedIdStore,
-    py_objects: &PyObjectInterner<ExternalParameterUid>,
+    py_objects: &PyObjectStore<ExternalParameterUid>,
+) -> PyResult<Bound<'py, PyAny>> {
+    create_py_execution_impl(
+        py,
+        &execution.statements,
+        sweep_parameters,
+        id_store,
+        py_objects,
+    )
+}
+
+fn create_py_execution_impl<'py>(
+    py: Python<'py>,
+    statements: &[Statement],
+    sweep_parameters: &[SweepParameter],
+    id_store: &NamedIdStore,
+    py_objects: &PyObjectStore<ExternalParameterUid>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let mut builder = PyStatementBuilder {
         py,
@@ -32,28 +49,33 @@ pub(crate) fn create_py_execution<'py>(
     let mut out = Vec::with_capacity(statements.len());
     for statement in statements {
         let py_stmt = match statement {
-            Statement::SetParameter { parameter, values } => builder.handle_set_parameter(
+            Statement::SetParameter { parameter } => builder.handle_set_parameter(
                 id_store
-                    .resolve(parameter)
+                    .resolve(*parameter)
                     .expect("Internal Error: Parameter ID not found"),
-                &values,
+                &sweep_parameters
+                    .iter()
+                    .find(|sp| sp.uid == *parameter)
+                    .expect("Internal Error: Sweep parameter not found")
+                    .values,
             )?,
             Statement::Loop { count, body } => {
-                let body = create_py_execution(py, body, id_store, py_objects)?;
-                builder.handle_loop(count, body)?
+                let body =
+                    create_py_execution_impl(py, body, sweep_parameters, id_store, py_objects)?;
+                builder.handle_loop(*count, body)?
             }
             Statement::ExecRealTime => builder.handle_exec_realtime()?,
             Statement::ExecCallback { callback_id, args } => builder.handle_exec_neartime(
                 id_store
-                    .resolve(callback_id)
+                    .resolve(*callback_id)
                     .expect("Internal Error: Callback ID not found"),
-                &args,
+                args,
             )?,
             Statement::SetNode { path, value } => builder.handle_set_node(
                 id_store
-                    .resolve(path)
+                    .resolve(*path)
                     .expect("Internal Error: Path ID not found"),
-                &value,
+                value,
             )?,
         };
         out.push(py_stmt);
@@ -64,7 +86,7 @@ pub(crate) fn create_py_execution<'py>(
 struct PyStatementBuilder<'py, 'a> {
     py: Python<'py>,
     id_store: &'a NamedIdStore,
-    py_objects: &'a PyObjectInterner<ExternalParameterUid>,
+    py_objects: &'a PyObjectStore<ExternalParameterUid>,
 }
 
 impl<'py> PyStatementBuilder<'py, '_> {

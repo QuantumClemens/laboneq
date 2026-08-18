@@ -80,7 +80,7 @@ def _integration_weights_by_signal(
         for kernel in kernels:
             waveform: None | np.ndarray = None
             for scale, suffix in [(1, ".wave"), (1, "_i.wave"), (1j, "_q.wave")]:
-                new_wf = compiled_experiment.waves.get(kernel.id + suffix)
+                new_wf = scheduled_exp.artifacts.waves.get(kernel.id + suffix)
                 if new_wf is not None:
                     waveform = scale * new_wf.samples + (
                         waveform if waveform is not None else 0

@@ -30,6 +30,7 @@ class ErrorCode(str, Enum):
     CONTROLLER_ERROR = "CONTROLLER_ERROR"
     INVALID_EXPERIMENT_UUID = "INVALID_EXPERIMENT_UUID"
     INVALID_EXPERIMENT_PAYLOAD = "INVALID_EXPERIMENT_PAYLOAD"
+    NOT_CONFIGURED = "NOT_CONFIGURED"
     VERSION_MISMATCH = "VERSION_MISMATCH"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -45,6 +46,17 @@ class DeviceSetupResponse(BaseModel):
     device_setup: dict[str, Any] = Field(
         description=(
             "Serialized DeviceSetup object. "
+            "Deserialize with laboneq.serializers.core.from_dict()."
+        )
+    )
+
+
+class InstrumentTopologyResponse(BaseModel):
+    """Response from GET /v1/instrumenttopology."""
+
+    instrument_topology: dict[str, Any] = Field(
+        description=(
+            "Serialized InstrumentTopology object. "
             "Deserialize with laboneq.serializers.core.from_dict()."
         )
     )

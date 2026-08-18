@@ -21,9 +21,9 @@ use std::num::NonZeroU32;
 use crate::error::{Error, Result};
 
 use laboneq_capnp::pulse::v1::{
-    calibration_capnp, common_capnp, device_setup_capnp, experiment_capnp, operation_capnp,
-    pulse_capnp, section_capnp, setup_description_qccs_capnp, setup_description_zqcs_capnp,
-    sweep_capnp,
+    calibration_capnp, common_capnp, coprocessor_capnp, device_setup_capnp, experiment_capnp,
+    operation_capnp, pulse_capnp, section_capnp, setup_description_qccs_capnp,
+    setup_description_zqcs_capnp, sweep_capnp,
 };
 use laboneq_common::device_options::DeviceOptions;
 use laboneq_common::named_id::{NamedId, NamedIdStore};
@@ -31,10 +31,14 @@ use laboneq_common::types::{Literal, ReferenceClock};
 use laboneq_dsl::ExperimentNode;
 use laboneq_dsl::device_setup::{Instrument, SetupDescription};
 use laboneq_dsl::experiment_signal::ExperimentSignal;
+use laboneq_dsl::hqcs::{
+    CmpOp, CoprocessorDecl, CoprocessorMappingDecl, FieldBinding, HqcsDeclarations, IsLiveTarget,
+    Predicate, StreamDecl, StreamEndpoint, StreamFieldDecl, VarType, VariableDecl, VariableValue,
+};
 use laboneq_dsl::operation::{
-    Acquire, AveragingLoop, Case, Delay, ExternalOrValue, Match, NearTimeCallback, Operation,
-    PlayPulse, PrngLoop, PrngSetup, Reserve, ResetOscillatorPhase, Section, SetNode, Sweep,
-    ValueEntry,
+    Acquire, AveragingLoop, Case, Delay, DoUntil, ExternalOrValue, MarkStale, MarkStaleTarget,
+    Match, NearTimeCallback, Operation, PlayPulse, PrngLoop, PrngSetup, Reserve,
+    ResetOscillatorPhase, Section, Send, SendArg, SetNode, Sweep, ValueEntry,
 };
 use laboneq_dsl::setup_description_qccs::{
     InternalConnection, PhysicalChannel, SetupDescriptionQccs,
@@ -50,28 +54,31 @@ use laboneq_dsl::types::{
     FunctionalPulse, HandleUid, Marker, MarkerSelector, MatchTarget, NumericLiteral, Oscillator,
     OscillatorKind, ParameterUid, PrngSampleUid, PulseDef, PulseFunction, PulseKind,
     PulseParameterUid, PulseUid, PumpCancellationSource, Quantity, RepetitionMode, SampledPulse,
-    SectionAlignment, SectionTimingMode, SectionUid, SignalUid, SweepParameter, Trigger, Unit,
-    ValueOrParameter,
+    SectionAlignment, SectionTimingMode, SectionUid, SignalUid, StreamUid, SweepParameter, Trigger,
+    Unit, ValueOrParameter, VariableUid,
 };
-use laboneq_py_utils::constant_serializer::{deserialize_json, is_json_prefixed};
-use laboneq_units::duration::seconds;
+use laboneq_py_utils::py_object_store::{PyObjectPayload, PyObjectStore};
+use laboneq_units::angle::Angle64;
+use laboneq_units::duration::{hertz, seconds};
 use num_complex::Complex64;
 use numeric_array::NumericArray;
-use pyo3::types::PyBytes;
-use pyo3::{IntoPyObjectExt, prelude::*};
-type ExternalParameterStore = HashMap<ExternalParameterUid, Py<PyAny>>;
+use pyo3::prelude::*;
+
+type ExternalParameterStore = PyObjectStore<ExternalParameterUid>;
 
 /// Result of deserializing a Cap'n Proto experiment message.
 pub(crate) struct DeserializedExperiment {
     pub root: ExperimentNode,
     pub id_store: NamedIdStore,
-    pub parameters: HashMap<ParameterUid, SweepParameter>,
+    pub parameters: Vec<SweepParameter>,
     pub pulses: HashMap<PulseUid, PulseDef>,
     pub external_parameter_values: ExternalParameterStore,
 
     pub experiment_signals: Vec<ExperimentSignal>,
 
     pub setup_description: SetupDescription,
+
+    pub hqcs: HqcsDeclarations,
 }
 
 // === Pure helper functions ===
@@ -81,41 +88,6 @@ fn text_to_str(reader: capnp::text::Reader<'_>) -> Result<&str> {
     reader
         .to_str()
         .map_err(|e| Error::new(format!("Invalid UTF-8 in Cap'n Proto text: {e}")))
-}
-
-/// Derive an `ExternalParameterUid` by SHA-256 hashing raw bytes.
-///
-/// Uses the same algorithm as `PyObjectInterner::get_or_intern` to ensure
-/// UID consistency. Works for both pickled payloads and raw binary data.
-fn uid_from_bytes(py: Python<'_>, pickled: &[u8]) -> Result<ExternalParameterUid> {
-    let sha256 = py
-        .import(pyo3::intern!(py, "hashlib"))?
-        .getattr(pyo3::intern!(py, "sha256"))?
-        .call1((PyBytes::new(py, pickled),))?;
-    let digest = sha256.call_method0(pyo3::intern!(py, "digest"))?;
-    let digest = digest.cast::<PyBytes>().map_err(Error::new)?.as_bytes();
-    let uid = u64::from_be_bytes(
-        digest[..digest.len().min(8)]
-            .try_into()
-            .map_err(|_| Error::new("Failed to derive external parameter UID"))?,
-    );
-    Ok(ExternalParameterUid(uid))
-}
-
-/// Derive an `ExternalParameterUid` from a Python object by pickling it and
-/// hashing the result. Use `uid_from_bytes` when you already have the
-/// serialized representation to avoid redundant pickling.
-fn intern_py_object_uid(value: &Bound<'_, PyAny>) -> Result<ExternalParameterUid> {
-    let py = value.py();
-    let pickled_bytes = py
-        .import(pyo3::intern!(py, "pickle"))?
-        .getattr(pyo3::intern!(py, "dumps"))?
-        .call1((value,))?;
-    let pickled = pickled_bytes
-        .cast::<PyBytes>()
-        .map_err(Error::new)?
-        .as_bytes();
-    uid_from_bytes(py, pickled)
 }
 
 /// Validate the schema version in the experiment metadata.
@@ -376,6 +348,43 @@ fn deserialize_acquisition_type(acq_type: operation_capnp::AcquisitionType) -> A
     }
 }
 
+fn coproc_type_from_capnp(t: coprocessor_capnp::VarType) -> Result<VarType> {
+    use coprocessor_capnp::VarType as CapnpVarType;
+    Ok(match t {
+        CapnpVarType::Unspecified => {
+            return Err(Error::new("Coprocessor type is unspecified"));
+        }
+        CapnpVarType::Int8 => VarType::Int8,
+        CapnpVarType::Int16 => VarType::Int16,
+        CapnpVarType::Int32 => VarType::Int32,
+        CapnpVarType::Int64 => VarType::Int64,
+        CapnpVarType::Uint8 => VarType::Uint8,
+        CapnpVarType::Uint16 => VarType::Uint16,
+        CapnpVarType::Uint32 => VarType::Uint32,
+        CapnpVarType::Uint64 => VarType::Uint64,
+        CapnpVarType::Phase => VarType::Phase,
+        CapnpVarType::Frequency => VarType::Frequency,
+        CapnpVarType::Amplitude => VarType::Amplitude,
+        CapnpVarType::DiscriminationDataPacked => VarType::DiscriminationDataPacked,
+        CapnpVarType::IqDataPacked => VarType::IqDataPacked,
+        CapnpVarType::ScopeShot => VarType::ScopeShot,
+        CapnpVarType::WaveformUpdate => VarType::WaveformUpdate,
+    })
+}
+
+fn coproc_value_from_capnp(
+    reader: &coprocessor_capnp::variable_value::Reader<'_>,
+) -> Result<VariableValue> {
+    use coprocessor_capnp::variable_value::Which;
+    Ok(match reader.which().map_err(Error::new)? {
+        Which::IntValue(v) => VariableValue::Int(v),
+        Which::FloatValue(v) => VariableValue::Float(v),
+        Which::PhaseRadians(v) => VariableValue::Phase(Angle64::from_radians(v)),
+        Which::FrequencyHz(v) => VariableValue::Frequency(hertz(v)),
+        Which::Amplitude(v) => VariableValue::Amplitude(v),
+    })
+}
+
 fn marker_spec_is_set(reader: &operation_capnp::marker_spec::Reader<'_>) -> Result<bool> {
     use operation_capnp::marker_spec::length::Which as LenWhich;
     use operation_capnp::marker_spec::start::Which as StartWhich;
@@ -526,11 +535,13 @@ struct Deserializer<'py> {
     handle_ids: Vec<NamedId>,
     section_uid_gen: SectionUidGenerator,
     external_parameter_values: ExternalParameterStore,
-    parameters: HashMap<ParameterUid, SweepParameter>,
+    parameters: Vec<SweepParameter>,
     pulses: HashMap<PulseUid, PulseDef>,
     pulse_definition_params: HashMap<PulseUid, HashMap<PulseParameterUid, ExternalOrValue>>,
     // A map of driver -> derived parameters.
     driving_parameters: HashMap<ParameterUid, Vec<ParameterUid>>,
+
+    hqcs: HqcsDeclarations,
 }
 
 impl<'py> Deserializer<'py> {
@@ -544,10 +555,11 @@ impl<'py> Deserializer<'py> {
             handle_ids: Vec::new(),
             section_uid_gen: SectionUidGenerator::new(),
             external_parameter_values: ExternalParameterStore::new(),
-            parameters: HashMap::new(),
+            parameters: Vec::new(),
             pulses: HashMap::new(),
             pulse_definition_params: HashMap::new(),
             driving_parameters: HashMap::new(),
+            hqcs: HqcsDeclarations::default(),
         }
     }
 
@@ -561,6 +573,7 @@ impl<'py> Deserializer<'py> {
         self.prepass_register_uids(experiment)?;
         self.deserialize_sweep_params(experiment)?;
         self.deserialize_pulses(experiment)?;
+        self.deserialize_hqcs_declarations(experiment)?;
 
         let setup_description = self.deserialize_device_setup(experiment)?;
         let experiment_signals = self.deserialize_experiment_signals(experiment)?;
@@ -574,6 +587,7 @@ impl<'py> Deserializer<'py> {
             external_parameter_values: self.external_parameter_values,
             experiment_signals,
             setup_description,
+            hqcs: self.hqcs,
         })
     }
 
@@ -611,6 +625,26 @@ impl<'py> Deserializer<'py> {
 
     fn resolve_handle_index(&self, idx: u32) -> Result<NamedId> {
         Self::resolve_index(&self.handle_ids, idx, "acquisition handle")
+    }
+
+    fn resolve_variable_index(&self, idx: u32) -> Result<VariableUid> {
+        if (idx as usize) < self.hqcs.variables.len() {
+            Ok(VariableUid(idx))
+        } else {
+            Err(Error::new(format!(
+                "Unknown variable index reference: {idx}"
+            )))
+        }
+    }
+
+    fn resolve_stream_index(&mut self, idx: u32) -> Result<StreamUid> {
+        let name = self
+            .hqcs
+            .streams
+            .get(idx as usize)
+            .map(|stream| stream.uid.clone())
+            .ok_or_else(|| Error::new(format!("Unknown stream index reference: {idx}")))?;
+        Ok(StreamUid(self.id_store.get_or_insert(&name)))
     }
 
     // === Pre-pass and top-level registration ===
@@ -667,9 +701,8 @@ impl<'py> Deserializer<'py> {
         let sweep_params = experiment.get_sweep_parameters().map_err(Error::new)?;
         for (idx, param) in sweep_params.iter().enumerate() {
             let named_id = self.resolve_parameter_index(idx as u32)?;
-            let uid = ParameterUid(named_id);
-            let sweep_param = self.deserialize_sweep_parameter(uid, &param)?;
-            self.parameters.insert(uid, sweep_param);
+            let sweep_param = self.deserialize_sweep_parameter(named_id.into(), &param)?;
+            self.parameters.push(sweep_param);
         }
         Ok(())
     }
@@ -849,6 +882,216 @@ impl<'py> Deserializer<'py> {
         })
     }
 
+    // === HQCS declaration deserialization ===
+
+    /// Deserialize the experiment-level HQCS declarations (coprocessors,
+    /// mappings, variables, streams) into `self.hqcs`.
+    ///
+    /// Must run after `prepass_register_uids` (stream-field handle bindings
+    /// resolve acquisition-handle indices) and before `deserialize_root_sections`
+    /// (sends, matches, and predicates resolve variable/stream indices).
+    fn deserialize_hqcs_declarations(
+        &mut self,
+        experiment: &experiment_capnp::experiment::Reader<'_>,
+    ) -> Result<()> {
+        let coprocessors = experiment.get_coprocessors().map_err(Error::new)?;
+        self.hqcs.coprocessors = Vec::with_capacity(coprocessors.len() as usize);
+        self.hqcs.mappings = Vec::new();
+        for coproc in coprocessors.iter() {
+            let label = text_to_str(coproc.get_label().map_err(Error::new)?)?;
+            let payload = coproc.get_payload().map_err(Error::new)?;
+            self.hqcs.coprocessors.push(CoprocessorDecl {
+                label: label.to_owned(),
+                payload: payload.to_vec(),
+            });
+            let inventory_key = text_to_str(coproc.get_inventory_key().map_err(Error::new)?)?;
+            if !inventory_key.is_empty() {
+                self.hqcs.mappings.push(CoprocessorMappingDecl {
+                    label: label.to_owned(),
+                    inventory_key: inventory_key.to_owned(),
+                });
+            }
+        }
+
+        let variables = experiment.get_variables().map_err(Error::new)?;
+        self.hqcs.variables = Vec::with_capacity(variables.len() as usize);
+        for variable in variables.iter() {
+            let ty = coproc_type_from_capnp(variable.get_type().map_err(Error::new)?)?;
+            let name = text_to_str(variable.get_name().map_err(Error::new)?)?;
+            let log_handle = text_to_str(variable.get_log_handle().map_err(Error::new)?)?;
+            // An absent `initial` would read back as the zero-valued first union
+            // member, so presence has to be probed explicitly.
+            let initial = if variable.has_initial() {
+                let value = variable.get_initial().map_err(Error::new)?;
+                Some(coproc_value_from_capnp(&value)?)
+            } else {
+                None
+            };
+            self.hqcs.variables.push(VariableDecl {
+                ty,
+                name: (!name.is_empty()).then(|| name.to_owned()),
+                initial,
+                log_handle: (!log_handle.is_empty()).then(|| log_handle.to_owned()),
+            });
+        }
+
+        let streams = experiment.get_streams().map_err(Error::new)?;
+        self.hqcs.streams = Vec::with_capacity(streams.len() as usize);
+        for stream in streams.iter() {
+            let resolve_endpoint = |idx: u32| -> Result<StreamEndpoint> {
+                if (idx as usize) < self.hqcs.coprocessors.len() {
+                    Ok(StreamEndpoint::Coprocessor(idx))
+                } else {
+                    Err(Error::new(format!(
+                        "Stream references coprocessor index {idx}, but only {} \
+                         coprocessors are declared",
+                        self.hqcs.coprocessors.len()
+                    )))
+                }
+            };
+            use coprocessor_capnp::stream::{dst::Which as DstWhich, src::Which as SrcWhich};
+            let src = match stream.get_src().which().map_err(Error::new)? {
+                SrcWhich::ControlSystem(()) => StreamEndpoint::ControlSystem,
+                SrcWhich::Coprocessor(idx) => resolve_endpoint(idx)?,
+            };
+            let dst = match stream.get_dst().which().map_err(Error::new)? {
+                DstWhich::ControlSystem(()) => StreamEndpoint::ControlSystem,
+                DstWhich::Coprocessor(idx) => resolve_endpoint(idx)?,
+            };
+
+            let link = text_to_str(stream.get_link().map_err(Error::new)?)?;
+            let uid = text_to_str(stream.get_uid().map_err(Error::new)?)?;
+
+            let field_readers = stream.get_fields().map_err(Error::new)?;
+            let mut fields = Vec::with_capacity(field_readers.len() as usize);
+            for field in field_readers.iter() {
+                let field_name = text_to_str(field.get_name().map_err(Error::new)?)?;
+                let ty = coproc_type_from_capnp(field.get_type().map_err(Error::new)?)?;
+                use coprocessor_capnp::struct_field::binding::Which as BindingWhich;
+                let binding = match field.get_binding().which().map_err(Error::new)? {
+                    BindingWhich::Unbound(()) => FieldBinding::Unbound,
+                    BindingWhich::Handles(handles) => {
+                        let handles = handles.map_err(Error::new)?;
+                        let mut resolved = Vec::with_capacity(handles.len() as usize);
+                        for idx in handles.iter() {
+                            resolved.push(HandleUid(self.resolve_handle_index(idx)?));
+                        }
+                        FieldBinding::Handles(resolved)
+                    }
+                    BindingWhich::Variable(idx) => {
+                        FieldBinding::Variable(self.resolve_variable_index(idx)?)
+                    }
+                    BindingWhich::Pulse(idx) => {
+                        FieldBinding::Pulse(PulseUid(self.resolve_pulse_index(idx)?))
+                    }
+                };
+                fields.push(StreamFieldDecl {
+                    name: field_name.to_owned(),
+                    ty,
+                    binding,
+                });
+            }
+
+            self.hqcs.streams.push(StreamDecl {
+                uid: uid.to_owned(),
+                src,
+                dst,
+                link: (!link.is_empty()).then(|| link.to_owned()),
+                fields,
+            });
+        }
+
+        Ok(())
+    }
+
+    fn deserialize_do_until(
+        &mut self,
+        reader: &section_capnp::do_until_section::Reader<'_>,
+        section_uid: SectionUid,
+        section_name: &str,
+    ) -> Result<DoUntil> {
+        let condition_reader = reader.get_condition().map_err(Error::new)?;
+        let condition = self.deserialize_predicate(&condition_reader, section_name)?;
+        Ok(DoUntil {
+            uid: section_uid,
+            condition,
+            max_count: reader.get_max_count(),
+        })
+    }
+
+    fn deserialize_predicate(
+        &mut self,
+        reader: &coprocessor_capnp::predicate::Reader<'_>,
+        section_name: &str,
+    ) -> Result<Predicate> {
+        use coprocessor_capnp::predicate::Which;
+        match reader.which().map_err(Error::new)? {
+            Which::Unspecified(()) => Err(Error::new(format!(
+                "do_until section '{section_name}' has no exit condition set"
+            ))),
+            Which::Comparison(cmp) => {
+                let variable = self.resolve_variable_index(cmp.get_variable())?;
+                let op = match cmp.get_op().map_err(Error::new)? {
+                    coprocessor_capnp::CmpOp::Unspecified => {
+                        return Err(Error::new(format!(
+                            "do_until section '{section_name}' has no comparison operator set"
+                        )));
+                    }
+                    coprocessor_capnp::CmpOp::Eq => CmpOp::Eq,
+                    coprocessor_capnp::CmpOp::Ne => CmpOp::Ne,
+                    coprocessor_capnp::CmpOp::Lt => CmpOp::Lt,
+                    coprocessor_capnp::CmpOp::Le => CmpOp::Le,
+                    coprocessor_capnp::CmpOp::Gt => CmpOp::Gt,
+                    coprocessor_capnp::CmpOp::Ge => CmpOp::Ge,
+                };
+                let rhs = coproc_value_from_capnp(&cmp.get_rhs().map_err(Error::new)?)?;
+                Ok(Predicate::Comparison { variable, op, rhs })
+            }
+            Which::IsLive(is_live) => {
+                use coprocessor_capnp::predicate::is_live::Which as IsLiveWhich;
+                let target = match is_live.which().map_err(Error::new)? {
+                    IsLiveWhich::Variable(idx) => {
+                        IsLiveTarget::Variable(self.resolve_variable_index(idx)?)
+                    }
+                    IsLiveWhich::Pulse(idx) => {
+                        IsLiveTarget::Pulse(PulseUid(self.resolve_pulse_index(idx)?))
+                    }
+                };
+                Ok(Predicate::IsLive(target))
+            }
+        }
+    }
+
+    fn deserialize_send_op(
+        &mut self,
+        reader: &operation_capnp::send_op::Reader<'_>,
+    ) -> Result<Send> {
+        let stream = self.resolve_stream_index(reader.get_stream())?;
+        let arg_readers = reader.get_args().map_err(Error::new)?;
+        let mut args = Vec::with_capacity(arg_readers.len() as usize);
+        for arg in arg_readers.iter() {
+            let name = text_to_str(arg.get_name().map_err(Error::new)?)?;
+            let value = coproc_value_from_capnp(&arg.get_value().map_err(Error::new)?)?;
+            args.push(SendArg {
+                name: name.to_owned(),
+                value,
+            });
+        }
+        Ok(Send { stream, args })
+    }
+
+    fn deserialize_mark_stale_op(
+        &mut self,
+        reader: &operation_capnp::mark_stale_op::Reader<'_>,
+    ) -> Result<MarkStale> {
+        use operation_capnp::mark_stale_op::target::Which;
+        let target = match reader.get_target().which().map_err(Error::new)? {
+            Which::Variable(idx) => MarkStaleTarget::Variable(self.resolve_variable_index(idx)?),
+            Which::Pulse(idx) => MarkStaleTarget::Pulse(PulseUid(self.resolve_pulse_index(idx)?)),
+        };
+        Ok(MarkStale { target })
+    }
+
     // === Section tree deserialization ===
 
     /// Deserialize the root section tree into an `ExperimentNode`.
@@ -975,6 +1218,10 @@ impl<'py> Deserializer<'py> {
                 let prng_loop = prng_loop.map_err(Error::new)?;
                 Operation::PrngLoop(self.deserialize_prng_loop(&prng_loop, section_uid)?)
             }
+            Which::DoUntil(do_until) => {
+                let do_until = do_until.map_err(Error::new)?;
+                Operation::DoUntil(self.deserialize_do_until(&do_until, section_uid, name)?)
+            }
         };
 
         let child_index = self.index_child_sections(reader)?;
@@ -1073,7 +1320,7 @@ impl<'py> Deserializer<'py> {
         // Derive the sweep count from the first parameter's length.
         let count = parameters
             .first()
-            .and_then(|uid| self.parameters.get(uid))
+            .and_then(|uid| self.parameters.iter().find(|p| p.uid == *uid))
             .map(|p| p.len() as u32)
             .and_then(NonZeroU32::new)
             .ok_or_else(|| Error::new("Sweep parameter must have at least one value"))?;
@@ -1125,6 +1372,7 @@ impl<'py> Deserializer<'py> {
                 let named_id = self.id_store.get_or_insert(alias);
                 MatchTarget::PrngSample(SectionUid(named_id))
             }
+            Which::Variable(idx) => MatchTarget::Variable(self.resolve_variable_index(idx)?),
             Which::None(()) => {
                 return Err(Error::new("Match section has no target"));
             }
@@ -1224,6 +1472,14 @@ impl<'py> Deserializer<'py> {
             Which::ResetOscillatorPhase(reset) => {
                 let reset = reset.map_err(Error::new)?;
                 Operation::ResetOscillatorPhase(self.deserialize_reset_oscillator_phase(&reset)?)
+            }
+            Which::Send(send) => {
+                let send = send.map_err(Error::new)?;
+                Operation::Send(self.deserialize_send_op(&send)?)
+            }
+            Which::MarkStale(mark_stale) => {
+                let mark_stale = mark_stale.map_err(Error::new)?;
+                Operation::MarkStale(self.deserialize_mark_stale_op(&mark_stale)?)
             }
             Which::None(()) => {
                 let label = section_label_for_errors(parent_section_name);
@@ -1590,6 +1846,12 @@ impl<'py> Deserializer<'py> {
         Ok(result)
     }
 
+    /// Hand an opaque value to the store and reference it by the UID it assigns.
+    fn store_external(&mut self, payload: PyObjectPayload<'_>) -> Result<ExternalOrValue> {
+        let uid = self.external_parameter_values.store(self.py, payload)?;
+        Ok(ExternalOrValue::ExternalParameter(uid))
+    }
+
     fn deserialize_value(
         &mut self,
         reader: &common_capnp::value::Reader<'_>,
@@ -1603,68 +1865,19 @@ impl<'py> Deserializer<'py> {
                 match constant.which().map_err(Error::new)? {
                     ConstantWhich::StringValue(value) => {
                         let value = text_to_str(value.map_err(Error::new)?)?;
-                        let py_value = value.into_bound_py_any(self.py)?;
-                        let external_uid = intern_py_object_uid(&py_value)?;
-                        self.external_parameter_values
-                            .entry(external_uid)
-                            .or_insert_with(|| py_value.clone().unbind());
-                        Ok(ExternalOrValue::ExternalParameter(external_uid))
+                        self.store_external(PyObjectPayload::Str(value))
                     }
-                    // `pythonValue` is strictly a fallback for arbitrary Python objects passed
-                    // into custom functional pulse parameters or to a custom user callback function.
-                    // Because the Rust compiler does not execute
-                    // these (they are evaluated in Python during waveform sampling or
-                    // passed as they are into Controller), they must be passed opaquely.
-                    // This feature is deprecated and will be removed in a future release.
-                    // Users should serialize their own data to bytes and deserialize it inside their functional pulse parameter or callback function instead.
+                    // `pythonValue` carries values that the Rust compiler never interprets:
+                    // they are evaluated in Python during waveform sampling, or handed to the
+                    // Controller as-is. Only JSON-representable values are accepted; the
+                    // serializer rejects anything else.
                     ConstantWhich::PythonValue(data) => {
                         let data = data.map_err(Error::new)?;
-                        if is_json_prefixed(data) {
-                            // Structuring back into the original Python value is deferred to
-                            // `PyObjectInterner::resolve`.
-                            let key = uid_from_bytes(self.py, data)?;
-                            match self.external_parameter_values.entry(key) {
-                                std::collections::hash_map::Entry::Occupied(_) => {
-                                    // Already deserialized, nothing to do.
-                                }
-                                std::collections::hash_map::Entry::Vacant(entry) => {
-                                    let value = deserialize_json(self.py, data)?;
-                                    entry.insert(value.into());
-                                }
-                            }
-                            return Ok(ExternalOrValue::ExternalParameter(key));
-                        }
-                        // Hash the raw pickled bytes directly — they came from
-                        // `pickle.dumps` in the serializer, so re-pickling would
-                        // be redundant.
-                        let external_uid = uid_from_bytes(self.py, data)?;
-                        let py_bytes = PyBytes::new(self.py, data);
-                        let loads = self
-                            .py
-                            .import(pyo3::intern!(self.py, "pickle"))?
-                            .getattr(pyo3::intern!(self.py, "loads"))?;
-                        let py_value = loads.call1((py_bytes,))?;
-                        laboneq_py_utils::deprecation_warning!(
-                            self.py,
-                            "Unsupported type: '{}'. Unsupported types are deprecated for pulse parameters and callback function arguments and \
-                    will be removed in a future release. Serialize the value yourself (e.g. to bytes) and \
-                    deserialize it inside your functional pulse parameter or callback function instead.",
-                            format!("{}", py_value.get_type().name()?)
-                        )?;
-                        self.external_parameter_values
-                            .entry(external_uid)
-                            .or_insert_with(|| py_value.clone().unbind());
-                        Ok(ExternalOrValue::ExternalParameter(external_uid))
+                        self.store_external(PyObjectPayload::Json(data))
                     }
                     ConstantWhich::RawBytesValue(data) => {
                         let data = data.map_err(Error::new)?;
-                        let py_value = PyBytes::new(self.py, data).into_any();
-                        // Pickle-then-hash to match the legacy path's UID derivation.
-                        let external_uid = intern_py_object_uid(&py_value)?;
-                        self.external_parameter_values
-                            .entry(external_uid)
-                            .or_insert_with(|| py_value.clone().unbind());
-                        Ok(ExternalOrValue::ExternalParameter(external_uid))
+                        self.store_external(PyObjectPayload::RawBytes(data))
                     }
                     _ => Ok(ExternalOrValue::ValueOrParameter(ValueOrParameter::Value(
                         deserialize_constant_numeric(&constant)?,

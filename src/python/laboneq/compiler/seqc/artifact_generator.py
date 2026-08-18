@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from laboneq._rust.codegenerator import ChannelProperties, FeedbackRegisterConfig
     from laboneq.compiler.common.integration_times import IntegrationTimes
     from laboneq.compiler.seqc.linker import CombinedRTOutputSeqC, NeartimeStep
-    from laboneq.data.artifacts_qccs import ArtifactsCodegen
     from laboneq.data.awg_info import AwgKey
 
 _PORT_MODE = {
@@ -39,11 +38,11 @@ _PORT_MODE = {
 
 
 class ArtifactGenerator:
-    def __init__(self, artifacts: ArtifactsCodegen):
+    def __init__(self, artifacts: CombinedRTOutputSeqC):
         self._artifacts = artifacts
 
     @property
-    def artifacts(self) -> ArtifactsCodegen:
+    def artifacts(self) -> CombinedRTOutputSeqC:
         return self._artifacts
 
     def add_oscillator_params(
@@ -254,8 +253,8 @@ def calc_inputs(
 def populate_codegen_artifacts(
     experiment_rs: compiler_rs.ProcessedExperiment,
     combined_compiler_output: CombinedRTOutputSeqC,
-) -> ArtifactsCodegen:
-    artifacts = combined_compiler_output.get_artifacts()
+) -> CombinedRTOutputSeqC:
+    artifacts = combined_compiler_output
     generator = ArtifactGenerator(artifacts)
 
     for device in combined_compiler_output.device_properties:

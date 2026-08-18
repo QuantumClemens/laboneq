@@ -189,7 +189,7 @@ def from_dict(
         serializer = import_cls(
             serializer_id,
             base_cls=VersionedClassSerializer,
-            prefix_restrictions=("laboneq.", "laboneq_zqcs."),
+            prefix_restrictions=("laboneq.", "zhinst_zqcs."),
         )
     except ImportError as exc:
         raise ValueError(f"Failed to import serializer {serializer_id!r}.") from exc

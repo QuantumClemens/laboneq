@@ -1,7 +1,7 @@
 // Copyright 2026 Zurich Instruments AG
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::types::{HandleUid, ParameterUid, SectionUid, UserRegister};
+use crate::types::{HandleUid, ParameterUid, SectionUid, UserRegister, VariableUid};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MatchTarget {
@@ -10,6 +10,7 @@ pub enum MatchTarget {
     /// PRNG Loop UID
     PrngSample(SectionUid),
     SweepParameter(ParameterUid),
+    Variable(VariableUid),
 }
 
 impl MatchTarget {
@@ -19,6 +20,7 @@ impl MatchTarget {
             MatchTarget::UserRegister(_) => "user register",
             MatchTarget::PrngSample(_) => "PRNG sample",
             MatchTarget::SweepParameter(_) => "sweep parameter",
+            MatchTarget::Variable(_) => "coprocessor variable",
         }
     }
 }

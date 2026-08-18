@@ -19,4 +19,4 @@ name = "laboneq_capnp"
 capnp = { workspace = true }
 
 [build-dependencies]
-capnpc = "0.26"
+capnpc = "0.27"

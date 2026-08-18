@@ -15,6 +15,7 @@ import zhinst.core
 from zhinst.core.errors import CoreError as LabOneCoreError
 
 from laboneq.compiler.common.resource_usage import (
+    ResourceLimitationError,
     ResourceLimitationErrorCollector,
 )
 from laboneq.core.exceptions.laboneq_exception import LabOneQException
@@ -65,18 +66,41 @@ def seqc_compile_one(item: SeqCCompileItem):
 
     item.elf = elf
 
+    # The AWG compiler reports whether the starts of all played waveforms fit into
+    # the limited FPGA waveform memory. If they don't, the device falls back to a
+    # dynamic swap-in mechanism that can fail intermittently and silently, leading
+    # to gaps / misaligned output. compile_seqc does not raise or warn in this case,
+    # so we raise a resource-limitation error and let awg_compile() handle it centrally.
+    wavemem = extra.get("wavemem") or {}
+    if wavemem.get("exceedsFpgaMemory", False):
+        used = wavemem.get("fpgaMemoryUsed")
+        usage = float(used) if isinstance(used, (int, float)) and used > 1.0 else None
+        raise ResourceLimitationError(
+            f"{item.filename} ({item.dev_type}, AWG {item.awg_index}): "
+            f"the start of the played waveforms exhausts the FPGA waveform-start "
+            f"memory. Gapless playback is not guaranteed and the output may be "
+            f"misaligned. Reduce the number of distinct waveforms per program "
+            f"(e.g. enable or increase chunking, or reduce pulse variations).",
+            usage=usage,
+        )
+
 
 async def seqc_compile_async(item: SeqCCompileItem):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, seqc_compile_one, item)
 
 
-def _process_errors(messages: list[str], settings: CompilerSettings):
-    if len(messages) == 0:
+def _process_errors(errors: list[BaseException], settings: CompilerSettings):
+    if len(errors) == 0:
         return
     reserr_collector = ResourceLimitationErrorCollector(compiler_settings=settings)
     other_errors = []
-    for msg in messages:
+    for exc in errors:
+        # Resource limitations detected directly already carry their usage hint.
+        if isinstance(exc, ResourceLimitationError):
+            reserr_collector.add(str(exc), usage=exc.usage)
+            continue
+        msg = str(exc)
         msg_lower = msg.lower()
         if any(
             m in msg_lower
@@ -116,7 +140,7 @@ def _process_errors(messages: list[str], settings: CompilerSettings):
             other_errors.append(msg)
     reserr_collector.raise_or_pass()
     if other_errors:
-        combined_messages = "\n".join([e for e in messages])
+        combined_messages = "\n".join(str(e) for e in errors)
         raise LabOneQException(f"Compilation failed.\n{combined_messages}")
 
 
@@ -128,10 +152,8 @@ def awg_compile(awg_data: list[SeqCCompileItem], settings: CompilerSettings):
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(seqc_compile_one, item) for item in awg_data]
         concurrent.futures.wait(futures)
-        error_msgs = [
-            str(future.exception())
-            for future in futures
-            if future.exception() is not None
+        errors = [
+            future.exception() for future in futures if future.exception() is not None
         ]
-        _process_errors(error_msgs, settings)
+        _process_errors(errors, settings)
     _logger.debug("Finished compilation.")

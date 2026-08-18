@@ -14,6 +14,7 @@ from laboneq.serializers.implementations._models._calibration import (
     remove_high_pass_clearing,
 )
 from laboneq.serializers.implementations._models._device_setup import (
+    CoprocessorInventoryEntryModel,
     DataServerModel,
     LogicalSignalGroupModel,
     PhysicalChannelGroupModel,
@@ -37,7 +38,7 @@ _converter = make_converter()
 @serializer(types=DeviceSetup, public=True)
 class DeviceSetupSerializer(VersionedClassSerializer[DeviceSetup]):
     SERIALIZER_ID = "laboneq.serializers.implementations.DeviceSetupSerializer"
-    VERSION = 4
+    VERSION = 5
 
     @classmethod
     def to_dict(
@@ -64,6 +65,10 @@ class DeviceSetupSerializer(VersionedClassSerializer[DeviceSetup]):
             k: QuantumElementSerializer.to_dict(v, options)
             for k, v in obj.qubits.items()
         }
+        coprocessors = {
+            k: _converter.unstructure(v, CoprocessorInventoryEntryModel)
+            for k, v in obj.coprocessors.items()
+        }
         data: dict = {
             "uid": uid,
             "servers": servers,
@@ -71,14 +76,37 @@ class DeviceSetupSerializer(VersionedClassSerializer[DeviceSetup]):
             "physical_channel_groups": physical_channels_groups,
             "logical_signal_groups": logical_signal_groups,
             "qubits": qubits,
+            "coprocessors": coprocessors,
         }
         if obj.setup_description is not None:
             data["setup_description"] = obj.setup_description.serialize()
+        if obj.controller_service_url is not None:
+            data["controller_service_url"] = obj.controller_service_url
         return {
             "__serializer__": cls.serializer_id(),
             "__version__": cls.version(),
             "__data__": data,
         }
+
+    @classmethod
+    def from_dict_v5(
+        cls,
+        serialized_data: JsonSerializableType,
+        options: DeserializationOptions | None = None,
+    ) -> DeviceSetup:
+        d = cls.from_dict_v4(serialized_data, options)
+        # `coprocessors` defaults to empty for pre-v5 payloads that lack the key.
+        coprocessors = serialized_data["__data__"].get("coprocessors", {})
+        d.coprocessors = {
+            k: _converter.structure(v, CoprocessorInventoryEntryModel)
+            for k, v in coprocessors.items()
+        }
+        # Absent for a setup that drives hardware directly, and for payloads
+        # written before the key existed.
+        d.controller_service_url = serialized_data["__data__"].get(
+            "controller_service_url"
+        )
+        return d
 
     @classmethod
     def from_dict_v4(

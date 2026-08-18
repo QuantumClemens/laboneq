@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::num::NonZero;
-use std::ops::Range;
 use std::sync::Arc;
 use std::vec;
 
@@ -98,7 +97,7 @@ impl ResultShapes {
                     .push(vec![self.raw_acquisition_axis_name]);
                 handle_shape
                     .axis_values
-                    .push(vec![AxisValues::Range(0..*length)]);
+                    .push(vec![AxisValues::Shots(*length)]);
             }
         });
 
@@ -187,7 +186,7 @@ fn merge_shapes(shapes: Vec<HandleResultShape>) -> Result<HandleResultShape> {
         first_shape.axis_names.push(vec![handle.into()]);
         first_shape
             .axis_values
-            .push(vec![AxisValues::Range(0..n_shapes)]);
+            .push(vec![AxisValues::Shots(n_shapes)]);
     } else {
         // The shapes are in match-case, so we don't add extra dimension for handle, just update the mask
         combined_match_case_mask
@@ -217,8 +216,10 @@ pub(crate) struct HandleResultShape {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AxisValues {
-    Range(Range<usize>),
+    /// A plain `0..shots` index count, with no backing parameter or explicit values.
+    Shots(usize),
     Explicit(Arc<NumericArray>),
+    Parameter(ParameterUid),
 }
 
 struct LoopEntry {
@@ -325,7 +326,7 @@ impl ResultShapeExtractor<'_> {
             count: op.count,
             is_chunked: false,
             axis_names: vec![op.uid.into()],
-            axis_points: vec![AxisValues::Range(0..op.count.get() as usize)],
+            axis_points: vec![AxisValues::Shots(op.count.get() as usize)],
             sweep_parameters: vec![],
         };
 
@@ -350,7 +351,7 @@ impl ResultShapeExtractor<'_> {
                 .unwrap_or_else(|| (*sweep_parameter_uid).into());
 
             axis_names.push(axis_name);
-            axis_points.push(AxisValues::Explicit(Arc::clone(param.inner_values())));
+            axis_points.push(AxisValues::Parameter(param.uid));
             sweep_parameters.push(param.uid);
         }
 

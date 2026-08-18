@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from laboneq.controller.api.commons import SubmissionRegistry
+from laboneq.controller.api.commons import APIError, SubmissionRegistry
 from laboneq.controller.api.controller_api import ControllerAPI
 from laboneq.controller.constants import DEFAULT_TIMEOUT_S
 from laboneq.controller.controller import Controller, SubmissionStatus
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from laboneq.controller.api.commons import SubmissionHandle
+    from laboneq.data.instrument_topology import InstrumentTopology
     from laboneq.data.scheduled_experiment import ScheduledExperiment
     from laboneq.dsl.device.device_setup import DeviceSetup
 
@@ -37,6 +38,7 @@ class LocalController(ControllerAPI):
         reset_devices: bool = False,
         disable_runtime_checks: bool = True,
         timeout_s: float | None = None,
+        instrument_topology: InstrumentTopology | None = None,
     ) -> LocalController:
         """Create an instance of the Controller."""
         if timeout_s is None:
@@ -57,16 +59,22 @@ class LocalController(ControllerAPI):
             disable_runtime_checks=disable_runtime_checks,
             timeout_s=timeout_s,
         )
-        return LocalController(device_setup=device_setup, controller=controller)
+        return LocalController(
+            device_setup=device_setup,
+            controller=controller,
+            instrument_topology=instrument_topology,
+        )
 
     def __init__(
         self,
         device_setup: DeviceSetup,
         controller: Controller,
+        instrument_topology: InstrumentTopology | None = None,
     ):
         self._device_setup = device_setup
         # Keep reference to avoid garbage collection
         self._controller = controller
+        self._instrument_topology = instrument_topology
         self._submissions = SubmissionRegistry()
 
     def close(self):
@@ -76,6 +84,16 @@ class LocalController(ControllerAPI):
 
     def get_default_devicesetup(self) -> DeviceSetup:
         return self._device_setup
+
+    @property
+    def instrument_topology(self) -> InstrumentTopology | None:
+        """Return the instrument topology, or None if not configured."""
+        return self._instrument_topology
+
+    def get_instrument_topology(self) -> InstrumentTopology:
+        if self._instrument_topology is None:
+            raise APIError("No instrument topology configured")
+        return self._instrument_topology
 
     @property
     def neartime_callbacks(self) -> dict[str, Callable]:

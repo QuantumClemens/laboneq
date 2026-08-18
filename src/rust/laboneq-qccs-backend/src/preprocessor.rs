@@ -41,6 +41,9 @@ use laboneq_ir::system::AwgDevice;
 use crate::Result;
 use crate::experiment_view::ExperimentSignal;
 use crate::experiment_view::ExperimentViewWrapper;
+use crate::oscillator::{
+    Device as OscillatorDevice, SignalOscillator, resolve_oscillator_modulation,
+};
 use crate::output_routing::process_output_routing;
 use crate::ports::{IoDirection, Port, parse_port};
 use crate::ppc_connections::resolve_ppc_connections;
@@ -99,6 +102,7 @@ pub struct BackendSignal {
     pub uid: SignalUid,
     pub device_uid: DeviceUid,
     pub device_kind: DeviceKind,
+    /// Device channels the signal occupies, sorted.
     pub channels: SmallVec<[u16; 4]>,
     pub awg_key: AwgKey,
     pub awg_index: u16,
@@ -110,10 +114,6 @@ impl PreprocessedBackendData for QccsBackendPreprocessedData {
         self.get_signal(signal_uid)
             .map(|s| s.awg_key)
             .ok_or_else(|| laboneq_error!("Expected AWG key for signal UID {}", signal_uid.0))
-    }
-
-    fn channels(&self, signal_uid: SignalUid) -> Option<&SmallVec<[u16; 4]>> {
-        self.get_signal(signal_uid).map(|s| &s.channels)
     }
 
     fn lead_delay(&self, signal_uid: SignalUid) -> Duration<Second> {
@@ -248,6 +248,15 @@ pub(crate) fn preprocess_experiment(
 
     process_precompensations(&backend_signals, &mut device_signals, experiment.id_store)?;
 
+    let mut oscillators =
+        signal_oscillators(&mut device_signals, &backend_signals, &awg_device_map);
+    resolve_oscillator_modulation(
+        &mut oscillators,
+        experiment.root,
+        experiment.pulses,
+        experiment.id_store,
+    )?;
+
     Ok(PreprocessOutput::new(
         QccsBackendPreprocessedData::new(
             backend_signals,
@@ -259,6 +268,35 @@ pub(crate) fn preprocess_experiment(
         awg_device_map.into_values().collect(),
         setup_fingerprint,
     ))
+}
+
+/// Pair each device signal with the device and channel information the oscillator
+/// modulation resolution needs. `backend_signals` describes the same signals in the
+/// same order as `device_signals`.
+fn signal_oscillators<'a>(
+    device_signals: &'a mut [DeviceSignal],
+    backend_signals: &'a [BackendSignal],
+    devices: &IndexMap<DeviceUid, AwgDevice>,
+) -> Vec<SignalOscillator<'a>> {
+    debug_assert_eq!(device_signals.len(), backend_signals.len());
+    device_signals
+        .iter_mut()
+        .zip(backend_signals)
+        .map(|(signal, backend)| SignalOscillator {
+            uid: signal.uid,
+            kind: &signal.kind,
+            sampling_rate: signal.sampling_rate.value(),
+            device: OscillatorDevice {
+                uid: backend.device_uid,
+                kind: backend.device_kind,
+                has_lrt: devices
+                    .get(&backend.device_uid)
+                    .is_some_and(|device| device.has_option("LRT")),
+            },
+            channels: &backend.channels,
+            oscillator: signal.calibration.oscillator.as_mut(),
+        })
+        .collect()
 }
 
 fn process_precompensations(

@@ -4,6 +4,7 @@
 mod backend;
 mod device_setup_fingerprint;
 mod experiment_view;
+mod oscillator;
 mod output_routing;
 mod ppc_connections;
 mod precompensation;

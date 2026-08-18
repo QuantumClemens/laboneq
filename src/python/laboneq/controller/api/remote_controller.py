@@ -21,12 +21,18 @@ from laboneq.controller.controller import SubmissionStatus
 from laboneq.serializers import from_dict, to_dict
 
 if TYPE_CHECKING:
+    from laboneq.data.instrument_topology import InstrumentTopology
     from laboneq.data.scheduled_experiment import ScheduledExperiment
     from laboneq.dsl.device.device_setup import DeviceSetup
     from laboneq.dsl.result.results import Results
 
 
 class RemoteController(ControllerAPI):
+    #: Total time to wait for the controller service to become ready on connect.
+    _READYZ_TIMEOUT_S: float = 60.0
+    #: Delay between successive readiness polls.
+    _READYZ_POLL_INTERVAL_S: float = 0.5
+
     @staticmethod
     def create(
         remote_url: str, ignore_version_mismatch: bool | None = None
@@ -55,7 +61,33 @@ class RemoteController(ControllerAPI):
             ).lower()
 
     def _connect(self):
-        pass
+        self._wait_until_ready()
+
+    def _wait_until_ready(self) -> None:
+        """Poll the controller service's `/readyz` endpoint until it is ready.
+
+        The service may still be starting up (connecting to hardware, or
+        booting in emulation mode) when the client first tries to reach it;
+        retry until it reports ready or `_READYZ_TIMEOUT_S` elapses.
+        """
+        url = f"{self._remote_url}/readyz"
+        deadline = time.monotonic() + self._READYZ_TIMEOUT_S
+        last_error = "no response received"
+        while True:
+            try:
+                with httpx.Client() as client:
+                    resp = client.get(url, headers=self._headers)
+                if resp.status_code == 200:
+                    return
+                last_error = f"{resp.status_code}: {resp.text}"
+            except httpx.HTTPError as exc:
+                last_error = str(exc)
+            if time.monotonic() >= deadline:
+                raise APIError(
+                    f"Controller service at {self._remote_url} did not become "
+                    f"ready within {self._READYZ_TIMEOUT_S:.0f}s: {last_error}"
+                )
+            time.sleep(self._READYZ_POLL_INTERVAL_S)
 
     def close(self):
         pass
@@ -65,6 +97,12 @@ class RemoteController(ControllerAPI):
         if data.get("device_setup") is None:
             raise APIError("Server has no device setup configured")
         return cast("DeviceSetup", from_dict(data["device_setup"]))
+
+    def get_instrument_topology(self) -> InstrumentTopology:
+        data = self._request_json("GET", "v1/instrumenttopology")
+        if data.get("instrument_topology") is None:
+            raise APIError("Server has no instrument topology configured")
+        return cast("InstrumentTopology", from_dict(data["instrument_topology"]))
 
     def submit_experiment(
         self,
@@ -134,3 +172,20 @@ class RemoteController(ControllerAPI):
         ):
             return resp.json()
         return None
+
+
+def get_instrument_topology(
+    remote_url: str, ignore_version_mismatch: bool | None = None
+) -> InstrumentTopology:
+    """Retrieve the instrument topology from the controller service at the given address.
+
+    Connects to the controller service, fetches the instrument topology, and closes
+    the connection.
+    """
+    controller = RemoteController.create(
+        remote_url=remote_url, ignore_version_mismatch=ignore_version_mismatch
+    )
+    try:
+        return controller.get_instrument_topology()
+    finally:
+        controller.close()

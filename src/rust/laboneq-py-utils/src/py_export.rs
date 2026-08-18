@@ -15,7 +15,7 @@ use laboneq_dsl::types::{
     PulseFunction, PulseKind, PulseParameterUid, ValueOrParameter,
 };
 
-use crate::py_object_interner::PyObjectInterner;
+use crate::py_object_store::PyObjectStore;
 
 /// Convert a [`NumericLiteral`] to a Python object.
 pub fn numeric_literal_to_py<'py>(
@@ -93,7 +93,7 @@ pub fn pulse_parameters_to_py_dict(
     py: Python,
     parameters: &HashMap<PulseParameterUid, ExternalOrValue>,
     id_store: &NamedIdStore,
-    py_objects: &PyObjectInterner<ExternalParameterUid>,
+    py_objects: &PyObjectStore<ExternalParameterUid>,
 ) -> PyResult<Py<PyDict>> {
     let dict = PyDict::new(py);
     for (key, value) in parameters.iter() {
@@ -108,7 +108,7 @@ fn external_or_value_to_py<'py>(
     py: Python<'py>,
     value: &ExternalOrValue,
     id_store: &NamedIdStore,
-    py_objects: &PyObjectInterner<ExternalParameterUid>,
+    py_objects: &PyObjectStore<ExternalParameterUid>,
 ) -> PyResult<Bound<'py, PyAny>> {
     match value {
         ExternalOrValue::ExternalParameter(uid) => Ok(py_objects

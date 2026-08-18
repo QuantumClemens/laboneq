@@ -3,6 +3,7 @@
 
 use anyhow::Context;
 use std::collections::HashSet;
+use std::num::NonZeroU32;
 
 use crate::error::{Error, Result};
 
@@ -46,9 +47,9 @@ pub(crate) fn lower_to_ir<T: SignalInfo + Sized>(
     ctx: &ExperimentContext<T>,
     nt_parameters: &ParameterStore,
 ) -> Result<ScheduledNode> {
-    let system_grid = compute_grid(ctx.signals()).1;
+    let system_grid = compute_grid(ctx.signals())?.1;
     let mut local_ctx =
-        LocalContext::new(&ctx.parameters, nt_parameters, system_grid, ctx.signals());
+        LocalContext::new(&ctx.parameters, nt_parameters, system_grid, ctx.signals())?;
 
     let mut root = ScheduledNode::new(IrKind::Root, ScheduleInfoBuilder::new().grid(1).build());
 
@@ -172,6 +173,9 @@ fn lower_to_ir_impl<T: SignalInfo + Sized>(
             panic!("Internal error: Near-time callbacks cannot exist in real-time.")
         }
         Operation::SetNode(_) => panic!("Internal error: Set node cannot exist in real-time."),
+        Operation::Send(_) | Operation::MarkStale(_) | Operation::DoUntil(_) => Err(Error::new(
+            "Internal error: HQCS operations must be lowered or refused before scheduling.",
+        )),
     }
 }
 
@@ -210,10 +214,18 @@ fn lower_sweep<T: SignalInfo + Sized>(
     ctx: &ExperimentContext<T>,
     local_ctx: &mut LocalContext,
 ) -> Result<Vec<ScheduledNode>> {
-    let loop_info = node
+    let mut loop_info = node
         .kind
         .loop_info()
         .ok_or_else(|| Error::new("Expected a loop"))?;
+
+    // If this is a paremeter sweep, derive the loop's iteration count from the length of the parameter(s),
+    // instead of taking `Sweep.count`. This way we account for parameter slicing due to chunking.
+    if let Some(param) = loop_info.parameters.first() {
+        let len = ctx.sweep_parameter(param)?.len();
+        loop_info.count = NonZeroU32::new(len as u32)
+            .ok_or_else(|| Error::new("Swept parameter must have at least one value"))?;
+    }
 
     let (children, reserved_signals) = local_ctx
         .with_loop(
@@ -518,7 +530,8 @@ fn lower_play_pulse(obj: &PlayPulseDsl, ctx: &LocalContext) -> Result<ScheduledN
     }
 }
 
-fn lower_acquire(obj: &AcquireDsl, ctx: &LocalContext) -> Result<ScheduledNode> {
+fn lower_acquire(obj: &AcquireDsl, ctx: &mut LocalContext) -> Result<ScheduledNode> {
+    ctx.set_handle_signal(obj.handle, obj.signal)?;
     let raw_length = seconds_to_tinysamples(obj.length.expect("Expected Acquire to have length"));
     let (grid, _) = ctx.signal_grids(&obj.signal);
     let integration_length =

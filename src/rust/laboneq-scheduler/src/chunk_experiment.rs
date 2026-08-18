@@ -26,23 +26,14 @@ impl ChunkingInfo {
         let end = ((self.index + 1) * chunk_size as usize).min(total_iterations.get() as usize);
         start..end
     }
-
-    fn chunk_size(&self, total_iterations: NonZeroU32) -> NonZeroU32 {
-        let chunk_size = total_iterations.get() / self.count.get();
-        assert!(
-            total_iterations.get().is_multiple_of(chunk_size),
-            "sweep is not evenly divided into chunks"
-        );
-        chunk_size
-            .try_into()
-            .expect("Expected chunk size to be non-zero and fit into u32")
-    }
 }
 
-/// This function modifies the experiment in place to only include the specified chunk of a sweep loop.
-/// When chunking happens, the `parameters` are updated accordingly to match the chunked iterations.
-pub(crate) fn chunk_experiment(
-    ir: &mut ExperimentNode,
+/// Restricts the experiment's sweep parameters to the current chunk.
+///
+/// TODO: In future consider chunking the sweep itself direclty, instead of
+/// working around it like this. Will perhaps need a refactor.
+pub(crate) fn slice_chunked_parameters(
+    ir: &ExperimentNode,
     parameters: &mut HashMap<ParameterUid, SweepParameter>,
     chunking_info: &ChunkingInfo,
 ) -> Result<()> {
@@ -52,12 +43,12 @@ pub(crate) fn chunk_experiment(
 }
 
 fn chunk_experiment_impl(
-    ir: &mut ExperimentNode,
+    ir: &ExperimentNode,
     parameters: &mut HashMap<ParameterUid, SweepParameter>,
     chunking_info: &ChunkingInfo,
     chunk_bound_parameters: &mut HashSet<ParameterUid>,
 ) -> Result<()> {
-    if let Operation::Sweep(obj) = &mut ir.kind {
+    if let Operation::Sweep(obj) = &ir.kind {
         for param in obj.parameters.iter() {
             // TODO: Currently parameters used in a chunked sweep cannot be used in any other sweeps
             if chunk_bound_parameters.contains(param) {
@@ -77,12 +68,9 @@ fn chunk_experiment_impl(
                 parameters.insert(*param, new_param);
                 chunk_bound_parameters.insert(*param);
             }
-            obj.count = chunking_info.chunk_size(obj.count);
-            obj.chunk_count = 1.try_into().unwrap();
-            obj.auto_chunking = false;
         }
     }
-    for child in ir.children.iter_mut() {
+    for child in ir.children.iter() {
         chunk_experiment_impl(child, parameters, chunking_info, chunk_bound_parameters)?;
     }
     Ok(())
@@ -90,7 +78,7 @@ fn chunk_experiment_impl(
 
 #[cfg(test)]
 mod tests {
-    use super::{ChunkingInfo, chunk_experiment};
+    use super::{ChunkingInfo, slice_chunked_parameters};
     use laboneq_common::named_id::NamedId;
     use laboneq_dsl::node_structure;
     use laboneq_dsl::operation::Operation;
@@ -101,7 +89,7 @@ mod tests {
     use std::vec;
 
     #[test]
-    fn test_chunk_experiment_first_chunk() {
+    fn test_slice_chunked_parameters_first_chunk() {
         let parameter0 =
             SweepParameter::new(ParameterUid(NamedId::debug_id(1)), Vec::from_iter(0..12)).unwrap();
         let target_loop_uid = SectionUid(NamedId::debug_id(1));
@@ -112,12 +100,11 @@ mod tests {
         )
         .chunk_count(3.try_into().unwrap())
         .build();
-        let mut root = node_structure!(Operation::Root, [(Operation::Sweep(chunked_sweep), [])]);
+        let root = node_structure!(Operation::Root, [(Operation::Sweep(chunked_sweep), [])]);
 
         let mut parameters = HashMap::from_iter([(parameter0.uid, parameter0.clone())]);
-        // Run chunking
-        chunk_experiment(
-            &mut root,
+        slice_chunked_parameters(
+            &root,
             &mut parameters,
             &ChunkingInfo {
                 index: 0,
@@ -132,9 +119,17 @@ mod tests {
             parameters[&parameter0.uid].values,
             NumericArray::Integer64(vec![0, 1, 2, 3]).into()
         );
+        // The sliced length is what lowering uses as the loop's iteration count.
+        assert_eq!(parameters[&parameter0.uid].len(), 4);
 
-        let chunked_sweep_expected =
-            SweepBuilder::new(target_loop_uid, vec![parameter0.uid], 4.try_into().unwrap()).build();
+        // The experiment tree is left untouched; only the parameters are sliced.
+        let chunked_sweep_expected = SweepBuilder::new(
+            target_loop_uid,
+            vec![parameter0.uid],
+            12.try_into().unwrap(),
+        )
+        .chunk_count(3.try_into().unwrap())
+        .build();
 
         let root_expected = node_structure!(
             Operation::Root,
@@ -144,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn test_chunk_experiment_last_chunk() {
+    fn test_slice_chunked_parameters_last_chunk() {
         let parameter0 =
             SweepParameter::new(ParameterUid(NamedId::debug_id(1)), Vec::from_iter(0..12)).unwrap();
         let target_loop_uid = SectionUid(NamedId::debug_id(1));
@@ -157,13 +152,12 @@ mod tests {
         .build();
 
         // Source experiment
-        let mut root = node_structure!(Operation::Root, [(Operation::Sweep(chunked_sweep), [])]);
+        let root = node_structure!(Operation::Root, [(Operation::Sweep(chunked_sweep), [])]);
 
         let mut parameters = HashMap::from_iter([(parameter0.uid, parameter0.clone())]);
 
-        // Run chunking
-        chunk_experiment(
-            &mut root,
+        slice_chunked_parameters(
+            &root,
             &mut parameters,
             &ChunkingInfo {
                 index: 2,
@@ -178,9 +172,17 @@ mod tests {
             parameters[&parameter0.uid].values,
             NumericArray::Integer64(vec![8, 9, 10, 11]).into()
         );
+        // The sliced length is what lowering uses as the loop's iteration count.
+        assert_eq!(parameters[&parameter0.uid].len(), 4);
 
-        let chunked_sweep_expected =
-            SweepBuilder::new(target_loop_uid, vec![parameter0.uid], 4.try_into().unwrap()).build();
+        // The experiment tree is left untouched; only the parameters are sliced.
+        let chunked_sweep_expected = SweepBuilder::new(
+            target_loop_uid,
+            vec![parameter0.uid],
+            12.try_into().unwrap(),
+        )
+        .chunk_count(3.try_into().unwrap())
+        .build();
 
         let root_expected = node_structure!(
             Operation::Root,

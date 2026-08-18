@@ -23,7 +23,7 @@ class ILinker(abc.ABC):
 
     @staticmethod
     @abc.abstractmethod
-    def repeat_previous(this, previous):
+    def repeat_previous(this, previous, previous_step_indices: list[int]):
         raise NotImplementedError
 
     @staticmethod

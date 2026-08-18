@@ -3,7 +3,7 @@
 
 use laboneq_dsl::ExperimentNode;
 use laboneq_dsl::operation::{Operation, Sweep};
-use laboneq_dsl::types::{ParameterUid, SectionUid};
+use laboneq_dsl::types::SectionUid;
 use pyo3::ffi::c_str;
 
 use pyo3::prelude::*;
@@ -27,8 +27,13 @@ fn test_derived_parameters_calibration() {
         let id_store = deserialized.id_store;
 
         // Test that the derived parameter is registered in the experiment parameters
-        let target_param_uid = ParameterUid(id_store.get("derived_param").unwrap());
-        assert!(deserialized.parameters.contains_key(&target_param_uid));
+        let target_param_uid = id_store.get("derived_param").unwrap().into();
+        assert!(
+            deserialized
+                .parameters
+                .iter()
+                .any(|p| p.uid == target_param_uid)
+        );
 
         // Test that the sweep contains the derived parameter, as well as the original parameter
         fn find_sweep<'a>(node: &'a ExperimentNode, target: &SectionUid) -> Option<&'a Sweep> {
@@ -66,9 +71,14 @@ fn test_derived_parameters_operation_field() {
             deserialize_experiment(py, capnp_data.extract::<&[u8]>().unwrap(), false).unwrap();
         let id_store = deserialized.id_store;
 
-        let target_param_uid = ParameterUid(id_store.get("derived_param").unwrap());
+        let target_param_uid = id_store.get("derived_param").unwrap().into();
         // Test that the derived parameter is registered in the experiment parameters
-        assert!(deserialized.parameters.contains_key(&target_param_uid));
+        assert!(
+            deserialized
+                .parameters
+                .iter()
+                .any(|p| p.uid == target_param_uid)
+        );
 
         // Test that the sweep contains the derived parameter, as well as the original parameter
         fn find_sweep<'a>(node: &'a ExperimentNode, target: &SectionUid) -> Option<&'a Sweep> {

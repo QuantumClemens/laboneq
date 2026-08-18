@@ -41,6 +41,8 @@ from urllib.parse import urlsplit
 from laboneq._version import get_version
 from laboneq.controller.service.app import create_app
 from laboneq.controller.service.controller_container import load_callbacks_from_module
+from laboneq.data.instrument_topology import InstrumentTopology
+from laboneq.data.instrument_topology_yaml import load_instrument_topology
 from laboneq.serializers import from_json
 
 if TYPE_CHECKING:
@@ -113,6 +115,44 @@ def _parse_dataserver(value: str) -> tuple[str, str]:
     return parsed.hostname, port
 
 
+def _parse_public_url(value: str) -> str:
+    """Validate a public base URL, failing at startup rather than per request.
+
+    Any trailing slash is left in place; `advertised_base_url` normalizes it,
+    and echoing the value back unchanged keeps the startup banner faithful to
+    what was configured.
+
+    Args:
+        value: Base URL in the form ``scheme://host[:port][/prefix]``.
+
+    Returns:
+        *value*, unchanged.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value is not a usable base URL.
+    """
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Invalid public URL {value!r}: {exc}"
+        ) from exc
+
+    if parsed.scheme not in ("http", "https"):
+        raise argparse.ArgumentTypeError(
+            f"Invalid public URL {value!r}: expected an http:// or https:// URL"
+        )
+    if not parsed.hostname:
+        raise argparse.ArgumentTypeError(
+            f"Invalid public URL {value!r}: host must not be empty"
+        )
+    if parsed.query or parsed.fragment:
+        raise argparse.ArgumentTypeError(
+            f"Invalid public URL {value!r}: must not carry a query or fragment"
+        )
+    return value
+
+
 def main(args: list[str] | None = None) -> NoReturn:
     """Run the LabOne Q Controller Service.
 
@@ -134,11 +174,15 @@ Examples:
   # Custom dataserver port
   laboneq-controller --dataserver 192.168.1.50:8004 --devicesetup lab_setup.json
 
-  # Run in emulation mode (requires --devicesetup)
+  # Run in emulation mode (requires --devicesetup or --instrumenttopology)
   laboneq-controller --devicesetup lab_setup.json --emulation
+  laboneq-controller --instrumenttopology topology.yaml --emulation
 
   # With pre-registered near-time callbacks
   laboneq-controller --dataserver 192.168.1.50 --callbacks my_callbacks.py
+
+  # Behind a proxy that forwards no Forwarded / X-Forwarded-* headers
+  laboneq-controller --dataserver 192.168.1.50 --public-url https://lab.example.com/laboneq
 """,
     )
 
@@ -174,9 +218,15 @@ Examples:
         "and served at GET /v1/devicesetup.",
     )
     parser.add_argument(
+        "--instrumenttopology",
+        metavar="FILE",
+        help="YAML (.yaml/.yml) or JSON (.json) file containing the InstrumentTopology.",
+    )
+    parser.add_argument(
         "--emulation",
         action="store_true",
-        help="Run in emulation mode (no real hardware). Requires --devicesetup.",
+        help="Run in emulation mode (no real hardware). "
+        "Requires --devicesetup or --instrumenttopology.",
     )
     parser.add_argument(
         "--callbacks",
@@ -188,6 +238,16 @@ Examples:
         "--reset-devices",
         action="store_true",
         help="Reset hardware on the first connection.",
+    )
+    parser.add_argument(
+        "--public-url",
+        metavar="URL",
+        type=_parse_public_url,
+        help="Base URL under which clients reach this service, e.g. "
+        "https://lab.example.com/laboneq.  This is the dispatch address served "
+        "in the instrument topology.  It is otherwise derived from the request "
+        "and its Forwarded / X-Forwarded-* headers, so this is only needed "
+        "behind a proxy that forwards none of them.",
     )
     parser.add_argument(
         "--no-cors",
@@ -217,13 +277,35 @@ Examples:
         )
         sys.exit(1)
 
-    # Validate: --emulation requires --devicesetup
-    if parsed_args.emulation and not parsed_args.devicesetup:
-        parser.error("--emulation requires --devicesetup")
+    # Validate: --emulation requires --devicesetup or --instrumenttopology
+    if (
+        parsed_args.emulation
+        and not parsed_args.devicesetup
+        and not parsed_args.instrumenttopology
+    ):
+        parser.error("--emulation requires --devicesetup or --instrumenttopology")
 
-    # Validate: at least one of --dataserver or --devicesetup must be provided
-    if not parsed_args.dataserver and not parsed_args.devicesetup:
-        parser.error("at least one of --dataserver or --devicesetup is required")
+    # Validate: at least one of --dataserver, --devicesetup, or
+    # --instrumenttopology must be provided
+    if (
+        not parsed_args.dataserver
+        and not parsed_args.devicesetup
+        and not parsed_args.instrumenttopology
+    ):
+        parser.error(
+            "at least one of --dataserver, --devicesetup, or "
+            "--instrumenttopology is required, --instrumenttopology "
+            "cannot be combined with the other two"
+        )
+
+    # Validate: --instrumenttopology cannot be combined with --devicesetup or
+    # --dataserver
+    if parsed_args.instrumenttopology and (
+        parsed_args.devicesetup or parsed_args.dataserver
+    ):
+        parser.error(
+            "--instrumenttopology cannot be combined with --devicesetup or --dataserver"
+        )
 
     # Parse dataserver address
     dataserver: tuple[str, str] | None = None
@@ -265,11 +347,44 @@ Examples:
             sys.exit(1)
         logger.info("Device setup loaded from %s", parsed_args.devicesetup)
 
+    # Load instrument topology file if provided
+    instrument_topology = None
+    if parsed_args.instrumenttopology:
+        topo_path = Path(parsed_args.instrumenttopology)
+        if not topo_path.is_file():
+            print(
+                f"Error: instrument topology file not found: {parsed_args.instrumenttopology}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            suffix = topo_path.suffix.lower()
+            if suffix in (".yaml", ".yml"):
+                instrument_topology = load_instrument_topology(topo_path)
+            else:
+                with topo_path.open(mode="rb") as f:
+                    loaded_obj = from_json(f.read())
+                if not isinstance(loaded_obj, InstrumentTopology):
+                    print(
+                        f"Error: {topo_path} does not contain a saved InstrumentTopology",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                instrument_topology = loaded_obj
+        except Exception as e:
+            print(f"Error loading instrument topology: {e}", file=sys.stderr)
+            sys.exit(1)
+        logger.info(
+            "Instrument topology loaded from %s", parsed_args.instrumenttopology
+        )
+
     # Print startup banner and info
     version = get_version()
     _print_banner(version)
     print(f"  Binding to:  http://{parsed_args.host}:{parsed_args.port}")
     print(f"  API docs:    http://{parsed_args.host}:{parsed_args.port}/docs")
+    if parsed_args.public_url:
+        print(f"  Public URL:  {parsed_args.public_url}")
     if dataserver:
         print(f"  Dataserver:  {':'.join(dataserver)}")
     else:
@@ -284,6 +399,11 @@ Examples:
         print("  Callbacks:   None registered")
     if device_setup is not None:
         print(f"  Setup:       {parsed_args.devicesetup}")
+    elif instrument_topology is not None:
+        print(
+            f"  Setup:       Built from instrument topology "
+            f"({parsed_args.instrumenttopology})"
+        )
     else:
         print("  Setup:       Auto-discovery from dataserver")
     print()
@@ -295,6 +415,8 @@ Examples:
         dataserver=dataserver,
         do_emulation=parsed_args.emulation,
         reset_devices=parsed_args.reset_devices,
+        instrument_topology=instrument_topology,
+        public_url=parsed_args.public_url,
     )
 
     uvicorn.run(

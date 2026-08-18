@@ -10,13 +10,6 @@ if TYPE_CHECKING:
     from laboneq.core.types.enums.acquisition_type import AcquisitionType
     from laboneq.core.types.enums.averaging_mode import AveragingMode
     from laboneq.core.types.numpy_support import NumPyArray
-    from laboneq.data.artifacts_qccs import (
-        AcquireLength,
-        Initialization,
-        IntegratorAllocation,
-        OscillatorParam,
-        RealtimeExecutionInit,
-    )
     from laboneq.executor.executor import Statement
 
 
@@ -68,19 +61,8 @@ class ResultShapeInfo:
 
 @dataclass
 class SoftwareVersions:
+    # LabOne Q version in SemVer format.
     laboneq: str
-
-
-@dataclass
-class Recipe:
-    initializations: list[Initialization] = field(default_factory=list)
-    realtime_execution_init: list[RealtimeExecutionInit] = field(default_factory=list)
-    oscillator_params: list[OscillatorParam] = field(default_factory=list)
-    integrator_allocations: list[IntegratorAllocation] = field(default_factory=list)
-    acquire_lengths: list[AcquireLength] = field(default_factory=list)
-    total_execution_time: float = 0.0
-    max_step_execution_time: float = 0.0
-    versions: SoftwareVersions = field(default_factory=lambda: SoftwareVersions(""))
 
 
 @dataclass
@@ -108,18 +90,3 @@ class ScheduledExperiment:
 
     #: Software versions used to produce this experiment.
     versions: SoftwareVersions = field(default_factory=lambda: SoftwareVersions(""))
-
-    @property
-    def recipe(self) -> Recipe:
-        """Deprecated compatibility view."""
-        artifacts = self.artifacts
-        return Recipe(
-            initializations=getattr(artifacts, "initializations", []),
-            realtime_execution_init=getattr(artifacts, "realtime_execution_init", []),
-            oscillator_params=getattr(artifacts, "oscillator_params", []),
-            integrator_allocations=getattr(artifacts, "integrator_allocations", []),
-            acquire_lengths=getattr(artifacts, "acquire_lengths", []),
-            total_execution_time=self.total_execution_time,
-            max_step_execution_time=self.max_step_execution_time,
-            versions=self.versions,
-        )

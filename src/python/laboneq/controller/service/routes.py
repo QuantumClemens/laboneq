@@ -8,6 +8,8 @@ import uuid as _uuid_mod
 from functools import wraps
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
+import attrs
+import orjson
 from fastapi import (
     APIRouter,
     Depends,
@@ -18,6 +20,7 @@ from fastapi import (
 
 from laboneq._version import get_version
 from laboneq.controller.controller import SubmissionStatus
+from laboneq.controller.service.advertised_url import advertised_base_url
 from laboneq.controller.service.models import (
     CallbackInfo,
     DeviceSetupResponse,
@@ -27,6 +30,7 @@ from laboneq.controller.service.models import (
     ExperimentResponse,
     ExperimentStatus,
     ExperimentStatusResponse,
+    InstrumentTopologyResponse,
     ServerInfoResponse,
     SubmitExperimentResponse,
 )
@@ -37,6 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from laboneq.controller.service.controller_container import ControllerContainer
+    from laboneq.data.instrument_topology import InstrumentTopology
     from laboneq.data.scheduled_experiment import ScheduledExperiment
 
 logger = logging.getLogger(__name__)
@@ -242,6 +247,60 @@ async def get_device_setup(
     return DeviceSetupResponse(device_setup=serialized)
 
 
+def _with_controller_service_url(
+    topology: InstrumentTopology, request: Request
+) -> InstrumentTopology:
+    """Return *topology* stamped with the address clients dispatch to.
+
+    A `DeviceSetup` built from the returned topology submits experiments to this
+    service rather than driving hardware directly. The address is the full base
+    URL the client reached this service under, so that the scheme and any path
+    prefix survive a reverse or authenticating proxy (see
+    `advertised_base_url`).
+
+    The configured topology never carries one of its own: a topology file cannot
+    set it, and pinning the advertised address is what ``--public-url`` is for.
+    """
+    return attrs.evolve(
+        topology,
+        controller_service_url=advertised_base_url(
+            request, request.app.state.public_url
+        ),
+    )
+
+
+@router.get(
+    "/instrumenttopology",
+    response_model=InstrumentTopologyResponse,
+    tags=["system"],
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": "Topology not configured on this server",
+        },
+    },
+)
+async def get_instrument_topology(
+    request: Request,
+    controller_container: ControllerContainer = Depends(get_controller_container),
+) -> InstrumentTopologyResponse:
+    """Return the instrument topology configured on this server."""
+    if controller_container.instrument_topology is None:
+        raise _error_response(
+            ErrorCode.NOT_CONFIGURED,
+            "No instrument topology configured on this server",
+            status_code=400,
+        )
+    topology = _with_controller_service_url(
+        controller_container.instrument_topology, request
+    )
+    serialized = serializers.to_dict(topology)
+    assert isinstance(serialized, dict), (
+        "Expected instrument topology to serialize to a dict"
+    )
+    return InstrumentTopologyResponse(instrument_topology=serialized)
+
+
 @router.get(
     "/info",
     response_model=ServerInfoResponse,
@@ -350,7 +409,12 @@ async def get_experiment(
     ):
         results = await controller_container.get_submission_results(handle_id)
         if results is not None:
-            results_dict = cast("dict[str, Any]", serializers.to_dict(results))
+            # `to_dict` alone can leave numpy arrays (and other custom leaf
+            # types) unconverted; only the orjson-based encoding used by
+            # `to_json` knows how to serialize them.
+            results_dict = cast(
+                "dict[str, Any]", orjson.loads(serializers.to_json(results))
+            )
 
     return ExperimentResponse(
         id=uuid,

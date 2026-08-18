@@ -577,7 +577,10 @@ fn calculate_integration_times(
             integration_lengths.insert(acquire_op.signal.uid, integration);
         }
     }
-    Ok(integration_lengths.into_values().collect())
+
+    let mut integration_lengths = integration_lengths.into_values().collect::<Vec<_>>();
+    integration_lengths.sort_by_key(|x| x.signal);
+    Ok(integration_lengths)
 }
 
 #[derive(Default)]

@@ -64,8 +64,8 @@ class GainsModel:
 @attrs.define
 class RoutedOutputModel:
     from_channel: int
-    amplitude: Union[float, str]
-    phase: Union[float, str]
+    amplitude: float | str | None
+    phase: float | str | None
     _target_class: ClassVar[Type] = RoutedOutput
 
 

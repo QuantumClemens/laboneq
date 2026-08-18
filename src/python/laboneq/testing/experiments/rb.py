@@ -91,6 +91,10 @@ class RBExperimentSettings:
         - Iteration `m` is `n_repeat` repetitions of a RB sequence of length `m`.
         - Shot `n` is the n'th "copy" of `len(sequence_lengths)` iterations.
 
+    !!! tip
+        To optimize use of waveform memory, ensure all lengths are a multiple of the
+        system timing grid.
+
     Important to note here is that all shots are identical.
 
     To generate the random numbers, `numpy.random.default_rng` is used with the seed attribute.
@@ -106,14 +110,29 @@ class RBExperimentSettings:
         n_repeat: Number of repetitions per sequence length.  Each repetition
             will yield a sample in the results.
         relaxation_length: Relaxation time between iterations.
+        excitation_length: Duration of each drive (gate) pulse. Used to build the
+            Clifford gate pulse map.
+        pi_pulse_amp: Amplitude of the pi-rotation drive pulse.
+        pi_half_pulse_amp: Amplitude of the pi/2-rotation drive pulse.
         prereadout_delay: Delay to apply before readout pulse.
+        excitation_frequencies: Drive frequency of each qubit, keyed by qubit id.
+        readout_frequencies: Readout frequency of each qubit, keyed by qubit id.
+        sg_lo_frequencies: Local-oscillator frequency of each qubit's drive (SG)
+            channel, keyed by qubit id. The drive IF is set to
+            `excitation_frequency - sg_lo_frequency`.
+        qa_lo_frequencies: Local-oscillator frequency of each qubit's readout (QA)
+            channel, keyed by qubit id. The readout IF is set to
+            `readout_frequency - qa_lo_frequency`.
         measure_pulse: Pulse used in readout signals.
         acquire_kernel: Integration kernel used in acquisition.
-
-    Properties:
-        excitation_length: Duration of gate pulses. Automatically calculated from gate map.
-        cliffords_section_length: Section length where the Clifford gates are applied.
-
+        acquisition_type: Acquisition mode used by the real-time acquire loop.
+        averaging_mode: Averaging mode used by the real-time acquire loop.
+        sg_modulation_type: Oscillator modulation type applied to the drive (SG) IF
+            oscillator.
+        qa_modulation_type: Oscillator modulation type applied to the readout (QA) IF
+            oscillator.
+        sg_range: Range to set in the SignalCalibration of the drive (SG) channel.
+            If set to None, uses the default settings.
     """
 
     seed: int = attrs.field(validator=attrs.validators.ge(0))
@@ -136,16 +155,9 @@ class RBExperimentSettings:
     acquire_kernel: pl.PulseFunctional
     acquisition_type: AcquisitionType = attrs.field()
     averaging_mode: AveragingMode = attrs.field()
-    modulation_type: ModulationType
-
-    cliffords_section_length: float = attrs.field(init=False)
-
-    @cliffords_section_length.default  # type: ignore
-    def _calc_max_sequence_duration(self):
-        """Calculate the duration of the maximum possible sequence assuming the longest
-        Clifford gate is repeated `n_repeat` times by `max(sequence_lengths)`."""
-        max_clifford_count = max(self.sequence_lengths) + 1  # +1 for recovery
-        return max_clifford_count * MAX_PAULI_GATE_PER_CLIFFORD * self.excitation_length
+    sg_modulation_type: ModulationType
+    qa_modulation_type: ModulationType
+    sg_range: float | None
 
 
 @attrs.define
@@ -221,7 +233,6 @@ class RBExperimentBuilder:
                     # generate composite pulse representing the sequence of Cliffords
                     with exp.section(
                         uid=f"cliffords_{length}_{k}",
-                        length=settings.cliffords_section_length,
                         alignment=SectionAlignment.RIGHT,
                     ):
                         for qubit_id in settings.qubit_ids:
@@ -277,7 +288,9 @@ class RBExperimentBuilder:
                 settings.sg_lo_frequencies,
                 settings.readout_frequencies,
                 settings.qa_lo_frequencies,
-                settings.modulation_type,
+                settings.sg_range,
+                settings.sg_modulation_type,
+                settings.qa_modulation_type,
             )
         )
         return exp
@@ -289,7 +302,9 @@ class RBExperimentBuilder:
         sg_lo_frequencies: dict[str, float],
         readout_frequencies: dict[str, float],
         qa_lo_frequencies: dict[str, float],
-        modulation_type: ModulationType,
+        drive_range: float | None,
+        sg_modulation_type: ModulationType,
+        qa_modulation_type: ModulationType,
     ):
         exp_cal = Calibration()
 
@@ -303,14 +318,15 @@ class RBExperimentBuilder:
 
             exp_cal[f"{qubit_id}_drive"] = SignalCalibration(
                 oscillator=Oscillator(
-                    frequency=f_drive - flo_sg, modulation_type=modulation_type
+                    frequency=f_drive - flo_sg, modulation_type=sg_modulation_type
                 ),
                 local_oscillator=Oscillator(frequency=flo_sg),
+                range=drive_range,
             )
 
             exp_cal[f"{qubit_id}_measure"] = SignalCalibration(
                 oscillator=Oscillator(
-                    frequency=f_ro - flo_qa, modulation_type=modulation_type
+                    frequency=f_ro - flo_qa, modulation_type=qa_modulation_type
                 ),
                 local_oscillator=Oscillator(frequency=flo_qa),
             )

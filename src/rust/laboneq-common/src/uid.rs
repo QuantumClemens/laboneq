@@ -35,6 +35,12 @@ pub struct PrngSampleUid(pub NamedId);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct PhysicalChannelUid(pub NamedId);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub struct StreamUid(pub NamedId);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub struct VariableUid(pub u32);
+
 #[macro_export]
 macro_rules! impl_from_named_id {
     ($t:ty) => {
@@ -69,6 +75,7 @@ impl_from_named_id!(SectionUid);
 impl_from_named_id!(PulseParameterUid);
 impl_from_named_id!(PrngSampleUid);
 impl_from_named_id!(PhysicalChannelUid);
+impl_from_named_id!(StreamUid);
 
 /// UID of an external parameter.
 ///

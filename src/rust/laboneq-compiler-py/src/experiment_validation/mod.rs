@@ -34,7 +34,7 @@ pub(super) fn validate_experiment(
     let ctx = ExperimentContext {
         root_node: &experiment.root,
         pulses: &experiment.pulses,
-        parameters: &experiment.parameters,
+        parameters: experiment.parameters.iter().map(|p| (p.uid, p)).collect(),
         signals: &signal_views(device_setup),
         nt_only_parameters: &nt_only_parameters,
     };
@@ -100,7 +100,7 @@ fn collect_nt_only_parameters(setup: &DeviceSetup) -> HashSet<ParameterUid> {
 struct ExperimentContext<'a> {
     root_node: &'a ExperimentNode,
     pulses: &'a HashMap<PulseUid, PulseDef>,
-    parameters: &'a HashMap<ParameterUid, SweepParameter>,
+    parameters: HashMap<ParameterUid, &'a SweepParameter>,
     signals: &'a HashMap<SignalUid, SignalView<'a>>,
     nt_only_parameters: &'a HashSet<ParameterUid>,
 }

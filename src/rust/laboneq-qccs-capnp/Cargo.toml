@@ -1,0 +1,22 @@
+[package]
+name = "laboneq-qccs-capnp"
+authors.workspace = true
+description = "Cap'n Proto generated code for LabOne Q QCCS compiled-output schemas"
+documentation.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "laboneq_qccs_capnp"
+
+[dependencies]
+capnp = { workspace = true }
+
+[build-dependencies]
+capnpc = "0.27"

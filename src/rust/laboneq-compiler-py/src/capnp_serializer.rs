@@ -14,14 +14,15 @@
 //! before parent for sweeps). PRNG data is inlined directly into the section
 //! structs (PrngSetupSection, PrngLoopSection, MatchSection).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use anyhow::Context;
 use laboneq_py_utils::constant_serializer;
 
 use crate::capnp_py_types::{
     CancellationSourcePy, ChannelTypePy, DeviceSetupCapnpPy, DeviceSignalPy, ExperimentCapnpPy,
-    ExperimentSignalPy, InstrumentPy, InternalConnectionPy, OscillatorPy, SetupDescriptionPy,
-    SetupDescriptionQccsPy, SetupDescriptionZqcsPy, UnitPy,
+    ExperimentSignalPy, FieldBindingPy, InstrumentPy, InternalConnectionPy, OscillatorPy,
+    SetupDescriptionPy, SetupDescriptionQccsPy, SetupDescriptionZqcsPy, UnitPy,
 };
 use crate::error::{Error, Result};
 use crate::py_conversion::{DslType, DslTypes};
@@ -29,13 +30,13 @@ use crate::py_helpers::is_exact_type;
 use numeric_array::NumericArray;
 
 use laboneq_capnp::pulse::v1::{
-    calibration_capnp, common_capnp, device_setup_capnp, experiment_capnp, operation_capnp,
-    pulse_capnp, section_capnp, setup_description_qccs_capnp, setup_description_zqcs_capnp,
-    sweep_capnp,
+    calibration_capnp, common_capnp, coprocessor_capnp, device_setup_capnp, experiment_capnp,
+    operation_capnp, pulse_capnp, section_capnp, setup_description_qccs_capnp,
+    setup_description_zqcs_capnp, sweep_capnp,
 };
 use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyComplex, PyDict, PyFloat, PyList, PyString};
+use pyo3::types::{PyBool, PyBytes, PyComplex, PyDict, PyFloat, PyList, PyString};
 
 use tracing::instrument;
 
@@ -86,7 +87,7 @@ enum PulseParamValue {
     Real(f64),
     Complex(f64, f64),
     Int(i64),
-    Pickled(Vec<u8>),
+    Json(Vec<u8>),
     RawBytes(Vec<u8>),
     ParameterRef(u32),
 }
@@ -168,6 +169,47 @@ impl EntityIndex {
     }
 }
 
+// === HQCS interning state ===
+
+/// A resolved HQCS stream endpoint.
+enum HqcsEndpoint {
+    ControlSystem,
+    Coprocessor(u32),
+}
+
+/// Interning state for HQCS entities. Python objects are identified by
+/// pointer (`as_ptr`); the borrowed experiment keeps them alive for the
+/// duration of the pass, so pointers are stable.
+#[derive(Default)]
+struct HqcsIndex<'py> {
+    /// Python object pointer → `Experiment.coprocessors` index.
+    coprocessor_ids: HashMap<usize, u32>,
+    /// Python object pointer → `Experiment.streams` index.
+    stream_ids: HashMap<usize, u32>,
+    /// Collected variables in id order; written to `Experiment.variables`
+    /// after the section pass.
+    variables: Vec<Bound<'py, PyAny>>,
+    /// Python object pointer → `Experiment.variables` index.
+    variable_ids: HashMap<usize, u32>,
+}
+
+impl<'py> HqcsIndex<'py> {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_or_insert_variable(&mut self, obj: &Bound<'py, PyAny>) -> u32 {
+        let key = obj.as_ptr() as usize;
+        if let Some(&idx) = self.variable_ids.get(&key) {
+            return idx;
+        }
+        let idx = self.variables.len() as u32;
+        self.variable_ids.insert(key, idx);
+        self.variables.push(obj.clone());
+        idx
+    }
+}
+
 // === Serialization context ===
 
 /// Bundles all shared state for a single experiment serialization pass.
@@ -179,35 +221,23 @@ struct Serializer<'py> {
     signal_order: Vec<String>,
     /// uid string → final signal index.
     signal_indices: HashMap<String, u32>,
-    /// Cached `pickle.dumps` callable — imported once to avoid per-call module lookup.
-    pickle_dumps: Bound<'py, PyAny>,
     /// Collected sweep parameters by UID for consistency checking across multiple references.
     collected_sweep_parameters: HashMap<String, Bound<'py, PyAny>>,
+    /// HQCS interning state (coprocessors, streams, variables).
+    hqcs: HqcsIndex<'py>,
 }
 
 impl<'py> Serializer<'py> {
     fn new(py: Python<'py>) -> Result<Self> {
-        let pickle_dumps = py
-            .import(intern!(py, "pickle"))?
-            .getattr(intern!(py, "dumps"))?;
-
         Ok(Self {
             dsl_types: DslTypes::new(py)?,
             np: py.import(intern!(py, "numpy"))?,
             entities: EntityIndex::new(),
             signal_order: Vec::new(),
             signal_indices: HashMap::new(),
-            pickle_dumps,
             collected_sweep_parameters: HashMap::new(),
+            hqcs: HqcsIndex::new(),
         })
-    }
-
-    fn serialize_external_opaque(&self, value: &Bound<'py, PyAny>) -> Result<Vec<u8>> {
-        if let Ok(json_bytes) = constant_serializer::serialize_json(value.py(), value) {
-            return Ok(json_bytes);
-        }
-        let py_bytes = self.pickle_dumps.call1((value,))?;
-        Ok(py_bytes.extract::<Vec<u8>>()?)
     }
 
     // === Index lookup helpers ===
@@ -430,7 +460,7 @@ impl<'py> Serializer<'py> {
                                 PulseParamValue::Int(v) => {
                                     val.reborrow().init_constant().set_integer(*v);
                                 }
-                                PulseParamValue::Pickled(bytes) => {
+                                PulseParamValue::Json(bytes) => {
                                     val.reborrow().init_constant().set_python_value(bytes);
                                 }
                                 PulseParamValue::RawBytes(bytes) => {
@@ -484,6 +514,352 @@ impl<'py> Serializer<'py> {
         for (i, handle) in self.entities.handles.iter().enumerate() {
             let mut hb = handles_builder.reborrow().get(i as u32);
             hb.set_uid(&handle.name);
+        }
+        Ok(())
+    }
+
+    // === HQCS serialization ===
+
+    fn serialize_hqcs_coprocessors(
+        &mut self,
+        experiment: &ExperimentCapnpPy<'py>,
+        mut exp_builder: experiment_capnp::experiment::Builder<'_>,
+    ) -> Result<()> {
+        // In the DSL, we have independent coprocessor concepts in the experiment (`Coprocessor`)
+        // and in the device setup (`CoprocessorInventoryEntry`), with a mapping between them.
+        // This mapping mimics the mapping of signals.
+        // Unlike for signals though, the coprocessors are always mapped in a 1:1 fashion
+        // (no two experiment coprocessors may be mapped to the same physical one), so we
+        // erase that mapping in the capnp representation.
+        let mut coproc_labels: HashSet<String> = HashSet::new();
+        if experiment.coprocessors.is_empty() {
+            return Ok(());
+        }
+        let mut list = exp_builder
+            .reborrow()
+            .init_coprocessors(experiment.coprocessors.len() as u32);
+        for (i, coproc) in experiment.coprocessors.iter().enumerate() {
+            self.hqcs
+                .coprocessor_ids
+                .insert(coproc.obj.as_ptr() as usize, i as u32);
+            let mut builder = list.reborrow().get(i as u32);
+            builder.set_label(&coproc.label);
+            if let Some(payload) = &coproc.payload {
+                builder.set_payload(payload);
+            }
+            if let Some(key) = Self::resolve_inventory_key(experiment, &coproc.label)? {
+                builder.set_inventory_key(&key);
+            }
+            coproc_labels.insert(coproc.label.clone());
+        }
+        for (label, _) in experiment.coprocessor_mappings.iter() {
+            if !coproc_labels.contains(label) {
+                return Err(Error::new(format!(
+                    "map_coprocessor target '{label}' does not match any declared coprocessor"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve the inventory key a coprocessor handle is mapped to, from the
+    /// experiment's label-keyed `map_coprocessor` entries. Returns `None` when
+    /// the handle is unmapped. The target may be an inventory key string, a
+    /// `CoprocessorInventoryEntry` (has `.key`), or a `Coprocessor` handle
+    /// (has `.label`).
+    fn resolve_inventory_key(
+        experiment: &ExperimentCapnpPy<'py>,
+        coproc_label: &str,
+    ) -> Result<Option<String>> {
+        for (label, target) in experiment.coprocessor_mappings.iter() {
+            if label != coproc_label {
+                continue;
+            }
+            let py = target.py();
+            let key: String = if let Ok(s) = target.extract::<String>() {
+                s
+            } else if let Some(key) = target.getattr_opt(intern!(py, "key"))? {
+                key.extract()?
+            } else if let Some(label) = target.getattr_opt(intern!(py, "label"))? {
+                label.extract()?
+            } else {
+                return Err(Error::new(format!(
+                    "Unsupported HQCS coprocessor mapping target for '{coproc_label}'"
+                )));
+            };
+            return Ok(Some(key));
+        }
+        Ok(None)
+    }
+
+    fn resolve_hqcs_endpoint(&self, endpoint: Option<&Bound<'_, PyAny>>) -> Result<HqcsEndpoint> {
+        let Some(endpoint_py) = endpoint else {
+            return Ok(HqcsEndpoint::ControlSystem);
+        };
+        let key = endpoint_py.as_ptr() as usize;
+        match self.hqcs.coprocessor_ids.get(&key) {
+            Some(&idx) => Ok(HqcsEndpoint::Coprocessor(idx)),
+            None => Err(Error::new(
+                "HQCS stream references a coprocessor that is not registered \
+                 on the experiment",
+            )),
+        }
+    }
+
+    fn serialize_hqcs_streams(
+        &mut self,
+        experiment: &ExperimentCapnpPy<'py>,
+        mut exp_builder: experiment_capnp::experiment::Builder<'_>,
+    ) -> Result<()> {
+        if experiment.streams.is_empty() {
+            return Ok(());
+        }
+        let mut list = exp_builder
+            .reborrow()
+            .init_streams(experiment.streams.len() as u32);
+        for (i, stream) in experiment.streams.iter().enumerate() {
+            self.hqcs
+                .stream_ids
+                .insert(stream.obj.as_ptr() as usize, i as u32);
+            let mut builder = list.reborrow().get(i as u32);
+
+            {
+                let mut src = builder.reborrow().init_src();
+                match self.resolve_hqcs_endpoint(stream.src.as_ref())? {
+                    HqcsEndpoint::ControlSystem => src.set_control_system(()),
+                    HqcsEndpoint::Coprocessor(idx) => src.set_coprocessor(idx),
+                }
+            }
+            {
+                let mut dst = builder.reborrow().init_dst();
+                match self.resolve_hqcs_endpoint(stream.dst.as_ref())? {
+                    HqcsEndpoint::ControlSystem => dst.set_control_system(()),
+                    HqcsEndpoint::Coprocessor(idx) => dst.set_coprocessor(idx),
+                }
+            }
+
+            if let Some(link) = &stream.link {
+                builder.reborrow().set_link(link);
+            }
+
+            match &stream.uid {
+                Some(uid) => builder.reborrow().set_uid(uid),
+                // Streams' uid is optional; synthesize a unique per-experiment
+                // id so the wire always carries a stable identifier.
+                None => builder.reborrow().set_uid(format!("stream_{i}")),
+            }
+
+            // Fields, in schema declaration order (dict preserves insertion order).
+            let mut fields_builder = builder.reborrow().init_fields(stream.fields.len() as u32);
+            for (j, field) in stream.fields.iter().enumerate() {
+                let mut fb = fields_builder.reborrow().get(j as u32);
+                fb.set_name(&field.name);
+                fb.set_type(coproc_type_from_py(&field.ty)?);
+                self.serialize_hqcs_field_binding(&field.binding, fb)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn serialize_hqcs_field_binding(
+        &mut self,
+        binding: &FieldBindingPy<'py>,
+        mut fb: coprocessor_capnp::struct_field::Builder<'_>,
+    ) -> Result<()> {
+        let mut b = fb.reborrow().init_binding();
+        match binding {
+            FieldBindingPy::OutboundHandles(handles) => {
+                let mut list = b.init_handles(handles.len() as u32);
+                for (k, handle) in handles.iter().enumerate() {
+                    list.set(k as u32, self.entities.get_or_insert_handle(handle));
+                }
+            }
+            FieldBindingPy::InboundScalar(target) => match target {
+                Some(t) => b.set_variable(self.hqcs.get_or_insert_variable(t)),
+                None => b.set_unbound(()),
+            },
+            FieldBindingPy::InboundPulse(target) => match target {
+                Some(t) => {
+                    let idx = self.collect_pulse(t)?;
+                    b.set_pulse(idx);
+                }
+                None => b.set_unbound(()),
+            },
+            FieldBindingPy::Unbound => b.set_unbound(()),
+        }
+        Ok(())
+    }
+
+    fn write_hqcs_variables(
+        &mut self,
+        mut exp_builder: experiment_capnp::experiment::Builder<'_>,
+    ) -> Result<()> {
+        if self.hqcs.variables.is_empty() {
+            return Ok(());
+        }
+        let variables = std::mem::take(&mut self.hqcs.variables);
+        let mut list = exp_builder
+            .reborrow()
+            .init_variables(variables.len() as u32);
+        for (i, var) in variables.iter().enumerate() {
+            let py = var.py();
+            let mut builder = list.reborrow().get(i as u32);
+            let type_py = var.getattr(intern!(py, "type"))?;
+            builder.set_type(coproc_type_from_py(&type_py)?);
+            let name_py = var.getattr(intern!(py, "name"))?;
+            if !name_py.is_none() {
+                let name: String = name_py.extract()?;
+                builder.set_name(&name);
+            }
+            let log_handle_py = var.getattr(intern!(py, "log_handle"))?;
+            if !log_handle_py.is_none() {
+                let handle: String = log_handle_py.extract()?;
+                builder.set_log_handle(&handle);
+            }
+            let initial_py = var.getattr(intern!(py, "initial"))?;
+            if !initial_py.is_none() {
+                set_variable_value(builder.init_initial(), &initial_py)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn serialize_hqcs_predicate(
+        &mut self,
+        condition: &Bound<'py, PyAny>,
+        builder: coprocessor_capnp::predicate::Builder<'_>,
+    ) -> Result<()> {
+        let py = condition.py();
+        let ty = condition.get_type();
+        if ty.is(self.dsl_types.laboneq_type(DslType::HqcsIsLive)) {
+            let target_py = condition.getattr(intern!(py, "target"))?;
+            let mut is_live = builder.init_is_live();
+            if target_py
+                .get_type()
+                .is(self.dsl_types.laboneq_type(DslType::HqcsVariable))
+            {
+                is_live.set_variable(self.hqcs.get_or_insert_variable(&target_py));
+            } else if target_py.getattr_opt(intern!(py, "uid"))?.is_some() {
+                let idx = self.collect_pulse(&target_py)?;
+                is_live.set_pulse(idx);
+            } else {
+                return Err(Error::new(
+                    "HQCS is_live target must be a Variable or a Pulse",
+                ));
+            }
+        } else if ty.is(self.dsl_types.laboneq_type(DslType::HqcsPredicate)) {
+            let lhs_py = condition.getattr(intern!(py, "lhs"))?;
+            if !lhs_py
+                .get_type()
+                .is(self.dsl_types.laboneq_type(DslType::HqcsVariable))
+            {
+                return Err(Error::new(
+                    "HQCS do_until comparison predicate must have a Variable \
+                     on the left-hand side",
+                ));
+            }
+            let mut cmp = builder.init_comparison();
+            cmp.set_variable(self.hqcs.get_or_insert_variable(&lhs_py));
+            let op: String = condition.getattr(intern!(py, "op"))?.extract()?;
+            use coprocessor_capnp::CmpOp;
+            cmp.set_op(match op.as_str() {
+                "==" => CmpOp::Eq,
+                "!=" => CmpOp::Ne,
+                "<" => CmpOp::Lt,
+                "<=" => CmpOp::Le,
+                ">" => CmpOp::Gt,
+                ">=" => CmpOp::Ge,
+                other => {
+                    return Err(Error::new(format!(
+                        "Unknown HQCS predicate operator: {other}"
+                    )));
+                }
+            });
+            let rhs_py = condition.getattr(intern!(py, "rhs"))?;
+            set_variable_value(cmp.init_rhs(), &rhs_py)?;
+        } else {
+            return Err(Error::new(
+                "HQCS do_until condition must be a comparison predicate \
+                 (e.g. `var != 0`) or `is_live(...)`",
+            ));
+        }
+        Ok(())
+    }
+
+    fn serialize_do_until_section(
+        &mut self,
+        obj: &Bound<'py, PyAny>,
+        builder: &mut section_capnp::section::Builder<'_>,
+    ) -> Result<()> {
+        let py = obj.py();
+        let mut do_until = builder.reborrow().init_do_until();
+        let max_count: u32 = obj.getattr(intern!(py, "max_count"))?.extract()?;
+        do_until.set_max_count(max_count);
+        let condition_py = obj.getattr(intern!(py, "condition"))?;
+        if condition_py.is_none() {
+            return Err(Error::new("HQCS do_until section requires a condition"));
+        }
+        let condition_builder = do_until.init_condition();
+        self.serialize_hqcs_predicate(&condition_py, condition_builder)?;
+        Ok(())
+    }
+
+    fn serialize_send_op(
+        &mut self,
+        obj: &Bound<'py, PyAny>,
+        builder: &mut operation_capnp::operation::Builder<'_>,
+    ) -> Result<()> {
+        let py = obj.py();
+        let mut send = builder.reborrow().init_send();
+        let stream_py = obj.getattr(intern!(py, "stream"))?;
+        let stream_id = self
+            .hqcs
+            .stream_ids
+            .get(&(stream_py.as_ptr() as usize))
+            .copied()
+            .ok_or_else(|| {
+                Error::new(
+                    "HQCS send references a stream that is not registered \
+                     on the experiment",
+                )
+            })?;
+        send.set_stream(stream_id);
+        let kwargs_py = obj.getattr(intern!(py, "literal_kwargs"))?;
+        let kwargs: Vec<(String, Bound<'_, PyAny>)> = kwargs_py
+            .call_method0(intern!(py, "items"))?
+            .try_iter()?
+            .map(|item| item.and_then(|i| i.extract()))
+            .collect::<PyResult<_>>()?;
+        let mut args = send.init_args(kwargs.len() as u32);
+        for (i, (name, value)) in kwargs.iter().enumerate() {
+            let mut arg = args.reborrow().get(i as u32);
+            arg.set_name(name);
+            set_variable_value(arg.init_value(), value)?;
+        }
+        Ok(())
+    }
+
+    fn serialize_mark_stale_op(
+        &mut self,
+        obj: &Bound<'py, PyAny>,
+        builder: &mut operation_capnp::operation::Builder<'_>,
+    ) -> Result<()> {
+        let py = obj.py();
+        let mark_stale = builder.reborrow().init_mark_stale();
+        let mut target = mark_stale.init_target();
+        let target_py = obj.getattr(intern!(py, "target"))?;
+        if target_py
+            .get_type()
+            .is(self.dsl_types.laboneq_type(DslType::HqcsVariable))
+        {
+            target.set_variable(self.hqcs.get_or_insert_variable(&target_py));
+        } else if target_py.getattr_opt(intern!(py, "uid"))?.is_some() {
+            let idx = self.collect_pulse(&target_py)?;
+            target.set_pulse(idx);
+        } else {
+            return Err(Error::new(
+                "HQCS mark_stale target must be a Variable or a Pulse",
+            ));
         }
         Ok(())
     }
@@ -546,6 +922,12 @@ impl<'py> Serializer<'py> {
             self.serialize_prng_loop_section(obj, &mut builder)?;
         } else if obj
             .get_type()
+            .is(self.dsl_types.laboneq_type(DslType::HqcsDoUntilSection))
+        {
+            warn_unsupported_section_fields(obj, false)?;
+            self.serialize_do_until_section(obj, &mut builder)?;
+        } else if obj
+            .get_type()
             .is(self.dsl_types.laboneq_type(DslType::Section))
         {
             self.serialize_regular_section(obj, &mut builder)?;
@@ -600,7 +982,8 @@ impl<'py> Serializer<'py> {
             || ty.is(self.dsl_types.laboneq_type(DslType::Match))
             || ty.is(self.dsl_types.laboneq_type(DslType::Case))
             || ty.is(self.dsl_types.laboneq_type(DslType::PrngSetup))
-            || ty.is(self.dsl_types.laboneq_type(DslType::PrngLoop)))
+            || ty.is(self.dsl_types.laboneq_type(DslType::PrngLoop))
+            || ty.is(self.dsl_types.laboneq_type(DslType::HqcsDoUntilSection)))
     }
 
     fn serialize_regular_section(
@@ -919,12 +1302,14 @@ impl<'py> Serializer<'py> {
         let user_register_py = obj.getattr(intern!(py, "user_register"))?;
         let sweep_parameter_py = obj.getattr(intern!(py, "sweep_parameter"))?;
         let prng_sample_py = obj.getattr(intern!(py, "prng_sample"))?;
+        let variable_py = obj.getattr(intern!(py, "variable"))?;
 
         if [
             &handle_py,
             &user_register_py,
             &sweep_parameter_py,
             &prng_sample_py,
+            &variable_py,
         ]
         .into_iter()
         .filter(|opt| !opt.is_none())
@@ -932,7 +1317,7 @@ impl<'py> Serializer<'py> {
             != 1
         {
             return Err(Error::new(
-                "Match must have exactly one of handle, user_register, sweep_parameter, or prng_sample defined",
+                "Match must have exactly one of handle, user_register, sweep_parameter, prng_sample, or variable defined",
             ));
         }
 
@@ -963,6 +1348,8 @@ impl<'py> Serializer<'py> {
             let uid_binding = prng_sample_py.getattr(intern!(py, "uid"))?;
             let sample_uid: &str = uid_binding.extract()?;
             match_section.set_prng_sample(sample_uid);
+        } else if !variable_py.is_none() {
+            match_section.set_variable(self.hqcs.get_or_insert_variable(&variable_py));
         }
 
         // local
@@ -1050,6 +1437,10 @@ impl<'py> Serializer<'py> {
             self.serialize_set_node_op(obj, &mut builder)?;
         } else if ty.is(self.dsl_types.laboneq_type(DslType::ResetOscillatorPhase)) {
             self.serialize_reset_oscillator_phase_op(obj, &mut builder)?;
+        } else if ty.is(self.dsl_types.laboneq_type(DslType::HqcsSend)) {
+            self.serialize_send_op(obj, &mut builder)?;
+        } else if ty.is(self.dsl_types.laboneq_type(DslType::HqcsMarkStale)) {
+            self.serialize_mark_stale_op(obj, &mut builder)?;
         } else {
             return Err(Error::new(format!(
                 "Unknown operation type: {}",
@@ -1191,7 +1582,8 @@ impl<'py> Serializer<'py> {
             let key_str: &str = key.extract()?;
             entry.set_key(key_str);
             let mut val_builder = entry.init_value();
-            self.set_value_entry(value, &mut val_builder)?;
+            self.set_value_entry(value, &mut val_builder)
+                .with_context(|| format!("pulse parameter '{key_str}'"))?;
         }
         Ok(())
     }
@@ -1381,7 +1773,8 @@ impl<'py> Serializer<'py> {
                         let key_str: &str = key.extract()?;
                         entry.set_key(key_str);
                         let mut val_builder = entry.init_value();
-                        self.set_value_entry(value, &mut val_builder)?;
+                        self.set_value_entry(value, &mut val_builder)
+                            .with_context(|| format!("pulse parameter '{key_str}'"))?;
                     }
                 }
             }
@@ -1436,7 +1829,8 @@ impl<'py> Serializer<'py> {
             entry.set_key(key_str);
 
             let mut val_builder = entry.init_value();
-            self.set_value_entry(value, &mut val_builder)?;
+            self.set_value_entry(value, &mut val_builder)
+                .with_context(|| format!("near-time callback argument '{key_str}'"))?;
         }
         Ok(())
     }
@@ -1497,6 +1891,12 @@ impl<'py> Serializer<'py> {
                         if value.is_instance(self.dsl_types.laboneq_type(DslType::Parameter))? {
                             let param_idx = self.collect_parameter(&value)?;
                             PulseParamValue::ParameterRef(param_idx)
+                        } else if value.is_instance_of::<PyBool>() {
+                            // `bool` subclasses `int`; keep it out of the `Int` branch below so
+                            // it round-trips as a bool rather than as `0`/`1`.
+                            let bytes = constant_serializer::serialize_json(&value)
+                                .with_context(|| format!("pulse parameter '{key_str}'"))?;
+                            PulseParamValue::Json(bytes)
                         } else if let Ok(v) = value.extract::<i64>() {
                             PulseParamValue::Int(v)
                         } else if value.is_instance_of::<PyComplex>() {
@@ -1507,8 +1907,9 @@ impl<'py> Serializer<'py> {
                         } else if let Ok(raw) = value.cast::<PyBytes>() {
                             PulseParamValue::RawBytes(raw.as_bytes().to_vec())
                         } else {
-                            let bytes = self.serialize_external_opaque(&value)?;
-                            PulseParamValue::Pickled(bytes)
+                            let bytes = constant_serializer::serialize_json(&value)
+                                .with_context(|| format!("pulse parameter '{key_str}'"))?;
+                            PulseParamValue::Json(bytes)
                         };
                     entries.push(PulseParamEntry {
                         key: key_str,
@@ -1576,6 +1977,12 @@ impl<'py> Serializer<'py> {
         obj: &Bound<'py, PyAny>,
         builder: &mut common_capnp::value::Builder<'_>,
     ) -> Result<()> {
+        // `bool` is a subclass of `int` in Python, so it would otherwise be serialized as an
+        // integer constant and reach the user as `0`/`1`. Route it to the opaque path instead,
+        // which round-trips it losslessly as JSON.
+        if obj.is_instance_of::<PyBool>() {
+            return self.set_external_opaque_constant(obj, builder);
+        }
         match self.set_value_from_py(obj, builder) {
             Ok(()) => Ok(()),
             Err(_) => self.set_external_opaque_constant(obj, builder),
@@ -1588,14 +1995,14 @@ impl<'py> Serializer<'py> {
         builder: &mut common_capnp::value::Builder<'_>,
     ) -> Result<()> {
         if let Ok(raw) = obj.cast::<PyBytes>() {
-            // Plain bytes — pass through without pickling.
+            // Plain bytes — pass through without serialization.
             builder
                 .reborrow()
                 .init_constant()
                 .set_raw_bytes_value(raw.as_bytes());
             return Ok(());
         }
-        let bytes = self.serialize_external_opaque(obj)?;
+        let bytes = constant_serializer::serialize_json(obj)?;
         builder.reborrow().init_constant().set_python_value(&bytes);
         Ok(())
     }
@@ -1970,6 +2377,11 @@ pub(crate) fn serialize_experiment(
     // signal references written during section tree traversal use final indices.
     ser.serialize_signals(&experiment, exp_builder.reborrow())?;
 
+    // HQCS entities that sections reference must be indexed before the
+    // section traversal.
+    ser.serialize_hqcs_coprocessors(&experiment, exp_builder.reborrow())?;
+    ser.serialize_hqcs_streams(&experiment, exp_builder.reborrow())?;
+
     // Traverse the section tree. All entity collections (pulses, parameters,
     // handles) accumulate into `ser.entities` with final zero-based indices
     // assigned at first insertion.
@@ -1980,6 +2392,8 @@ pub(crate) fn serialize_experiment(
     ser.write_parameters(exp_builder.reborrow())?;
     ser.write_pulses(exp_builder.reborrow())?;
     ser.write_handles(exp_builder.reborrow())?;
+    // Variables are discovered during the stream and section passes.
+    ser.write_hqcs_variables(exp_builder.reborrow())?;
 
     let mut metadata = exp_builder.reborrow().init_metadata();
     if let Some(uid) = experiment.uid {
@@ -2027,6 +2441,60 @@ fn set_linear_start_stop(
         // See comment on start branch above.
         NumericValue::Int(v) => lin.reborrow().init_stop().set_real(*v as f64),
     }
+}
+
+/// Map an HQCS type-catalog class (e.g. `laboneq.dsl.coprocessor.types.Int32`)
+/// to the capnp enum by class name. The catalog is closed; unknown names are
+/// an error.
+fn coproc_type_from_py(type_obj: &Bound<'_, PyAny>) -> Result<coprocessor_capnp::VarType> {
+    let py = type_obj.py();
+    let name_obj = type_obj.getattr(intern!(py, "__name__"))?;
+    let name: &str = name_obj.extract()?;
+    use coprocessor_capnp::VarType;
+    Ok(match name {
+        "Int8" => VarType::Int8,
+        "Int16" => VarType::Int16,
+        "Int32" => VarType::Int32,
+        "Int64" => VarType::Int64,
+        "Uint8" => VarType::Uint8,
+        "Uint16" => VarType::Uint16,
+        "Uint32" => VarType::Uint32,
+        "Uint64" => VarType::Uint64,
+        "Phase" => VarType::Phase,
+        "Frequency" => VarType::Frequency,
+        "Amplitude" => VarType::Amplitude,
+        "DiscriminationDataPacked" => VarType::DiscriminationDataPacked,
+        "IqDataPacked" => VarType::IqDataPacked,
+        "ScopeShot" => VarType::ScopeShot,
+        "WaveformUpdate" => VarType::WaveformUpdate,
+        other => {
+            return Err(Error::new(format!(
+                "Unknown HQCS stream field type: {other}"
+            )));
+        }
+    })
+}
+
+/// Serialize a Python scalar coprocessor value into a `VariableValue` builder.
+fn set_variable_value(
+    mut builder: coprocessor_capnp::variable_value::Builder<'_>,
+    value: &Bound<'_, PyAny>,
+) -> Result<()> {
+    let py = value.py();
+    if let Ok(v) = value.extract::<i64>() {
+        builder.set_int_value(v);
+    } else if let Ok(v) = value.extract::<f64>() {
+        builder.set_float_value(v);
+    } else if let Some(x) = value.getattr_opt(intern!(py, "radians"))? {
+        builder.set_phase_radians(x.extract()?);
+    } else if let Some(x) = value.getattr_opt(intern!(py, "hz"))? {
+        builder.set_frequency_hz(x.extract()?);
+    } else if let Some(x) = value.getattr_opt(intern!(py, "value"))? {
+        builder.set_amplitude(x.extract()?);
+    } else {
+        return Err(Error::new(format!("Unsupported HQCS value: {value}")));
+    }
+    Ok(())
 }
 
 /// Extract alignment from a Python section object and convert to capnp enum.

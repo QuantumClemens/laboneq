@@ -133,7 +133,7 @@ pub(super) fn handle_set_oscillator_frequency<T: SignalInfo + Sized>(
         swept_hw_osc_signals
             .iter()
             .fold(seconds(0.0), |acc, signal| {
-                acc.max(signal.device_traits().oscillator_set_latency)
+                acc.max(signal.oscillator_set_latency())
             })
     } else {
         seconds(0.0)

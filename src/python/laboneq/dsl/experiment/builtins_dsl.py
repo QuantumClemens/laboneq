@@ -42,8 +42,44 @@ __all__ = [  # noqa: RUF022
     "QuantumOperations",
     "create_pulse",
     "quantum_operation",
+    # HQCS
+    "Coprocessor",
+    "Variable",
+    "Struct",
+    "register_stream",
+    "send",
+    "mark_stale",
+    "is_live",
+    "do_until",
+    "render_layout",
+    "Phase",
+    "Frequency",
+    "Amplitude",
+    "Int8",
+    "Int16",
+    "Int32",
+    "Int64",
+    "Uint8",
+    "Uint16",
+    "Uint32",
+    "Uint64",
+    "DiscriminationDataPacked",
+    "IqDataPacked",
+    "ScopeShot",
+    "WaveformUpdate",
+    "LoggedVariable",
 ]
 
+# HQCS coprocessor surface
+from laboneq.dsl.coprocessor.builtins import (
+    is_live,
+    mark_stale,
+    register_stream,
+    render_layout,
+    send,
+)
+from laboneq.dsl.coprocessor.coprocessor import Coprocessor
+from laboneq.dsl.coprocessor.struct import Struct
 from laboneq.dsl.experiment import pulse_library
 from laboneq.dsl.experiment.build_experiment import (
     add_quantum_elements,
@@ -73,9 +109,29 @@ from laboneq.dsl.experiment.builtins import (
     sweep_range,
     uid,
 )
+from laboneq.dsl.experiment.do_until import do_until
 from laboneq.dsl.quantum.quantum_operations import (
     QuantumOperations,
     create_pulse,
     quantum_operation,
+)
+from laboneq.dsl.result.logged_variable import LoggedVariable
+from laboneq.dsl.variable import Variable
+from laboneq.dsl.variable.types import (
+    Amplitude,
+    DiscriminationDataPacked,
+    Frequency,
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    IqDataPacked,
+    Phase,
+    ScopeShot,
+    Uint8,
+    Uint16,
+    Uint32,
+    Uint64,
+    WaveformUpdate,
 )
 from laboneq.workflow import handles

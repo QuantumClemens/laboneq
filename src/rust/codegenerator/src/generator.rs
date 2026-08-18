@@ -374,14 +374,10 @@ fn construct_awg_result(
         integration_lengths: measurement_info
             .integration_lengths
             .into_iter()
-            .map(|x| {
-                (
-                    *x.signal(),
-                    SignalIntegrationInfo {
-                        is_play: x.is_play(),
-                        length: x.duration(),
-                    },
-                )
+            .map(|x| SignalIntegrationInfo {
+                signal: *x.signal(),
+                is_play: x.is_play(),
+                length: x.duration(),
             })
             .collect(),
         feedback_register_config: FeedbackRegisterConfig {
@@ -752,7 +748,7 @@ fn evaluate_measurement_per_device(awg_results: &[AwgCodeGenerationResult]) -> V
         }
         let max = result
             .integration_lengths
-            .values()
+            .iter()
             .filter_map(|meas| {
                 if !meas.is_play {
                     Some(meas.length)

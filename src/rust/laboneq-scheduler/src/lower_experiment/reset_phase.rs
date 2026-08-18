@@ -17,9 +17,8 @@ use laboneq_ir::IrKind;
 
 /// Creates a [ScheduledNode] that represents a [IrKind::ResetOscillatorPhase] for the given signals.
 ///
-/// The timing properties `length` and `grid` are determined based on the device
-/// traits `oscillator_reset_duration` and `lo_frequency_granularity` of the hardware modulated
-/// signals.
+/// `length` and `grid` follow from the `oscillator_reset_duration` and
+/// `lo_frequency_granularity` of the hardware modulated signals.
 pub(super) fn handle_reset_oscillator_phase<T: SignalInfo>(
     signals: &[&T],
     ctx: &ExperimentContext<T>,
@@ -55,11 +54,11 @@ fn create_schedule<T: SignalInfo>(
     let mut grid = 1;
     let mut length = 0;
     for signal in hw_reset_signals.iter() {
-        let duration = seconds_to_tinysamples(signal.device_traits().oscillator_reset_duration);
+        let duration = seconds_to_tinysamples(signal.oscillator_reset_duration());
         length = length.max(duration.value());
         grid = lcm(grid, system_grid.value());
-        if let Some(lo_freq_granularity) = signal.device_traits().lo_frequency_granularity {
-            // Align the grid the LO frequency granularity to ensure phase consistency after the reset of the NCO.
+        if let Some(lo_freq_granularity) = signal.lo_frequency_granularity() {
+            // Align the grid to the LO granularity, so the phase is consistent after the NCO reset.
             let duration = seconds_to_tinysamples(lo_freq_granularity.inv());
             let grid_adjusted = lcm(grid, duration.value());
             // TODO: Returns a dedicated result type with logging information instead of logging directly here?
@@ -78,7 +77,7 @@ fn create_schedule<T: SignalInfo>(
         }
         diagnostic!(
             "An additional delay of {} has been added on signal '{}' to wait for the phase reset.",
-            signal.device_traits().oscillator_reset_duration,
+            signal.oscillator_reset_duration(),
             ctx.resolve_uid(signal.uid())?,
         );
     }

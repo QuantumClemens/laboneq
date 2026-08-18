@@ -49,7 +49,7 @@ pub struct AwgCodeGenerationResult {
     pub command_table: Option<CommandTable>,
     /// SHFPPC sweeper configuration JSON string, if applicable.
     pub(crate) shf_sweeper_config: Option<String>,
-    pub integration_lengths: HashMap<SignalUid, SignalIntegrationInfo>,
+    pub integration_lengths: Vec<SignalIntegrationInfo>,
     pub feedback_register_config: FeedbackRegisterConfig,
     pub output_channel_properties: Vec<ChannelProperties>,
     pub input_channel_properties: Vec<InputChannelProperties>,
@@ -154,6 +154,7 @@ pub struct FeedbackRegisterConfig {
 
 #[derive(Debug, Clone)]
 pub struct SignalIntegrationInfo {
+    pub signal: SignalUid,
     pub is_play: bool,
     pub length: Samples,
 }

@@ -12,6 +12,129 @@ pub(crate) struct ExperimentCapnpPy<'py> {
     /// The expected Python type is `laboneq.dsl.experiment.Section`.
     pub sections: Vec<Bound<'py, PyAny>>,
     pub experiment_signals: Vec<ExperimentSignalPy<'py>>,
+    /// HQCS coprocessor handles (`laboneq.dsl.coprocessor.Coprocessor`).
+    pub coprocessors: Vec<CoprocessorPy<'py>>,
+    pub coprocessor_mappings: Vec<(String, Bound<'py, PyAny>)>,
+    pub streams: Vec<StreamPy<'py>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct CoprocessorPy<'py> {
+    // `obj` is retained so the serializer can register the handle by object
+    // identity (`as_ptr`); stream endpoints are resolved against the same
+    // pointer. `payload` is optional bytes (`None` when unset).
+    pub obj: Bound<'py, PyAny>,
+    pub label: String,
+    pub payload: Option<Vec<u8>>,
+}
+
+impl<'py> FromPyObject<'_, 'py> for CoprocessorPy<'py> {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, 'py, PyAny>) -> Result<Self, Self::Error> {
+        let py = obj.py();
+        let label = obj.getattr(intern!(py, "label"))?.extract()?;
+        let payload = obj.getattr(intern!(py, "payload"))?.extract()?;
+        Ok(Self {
+            obj: obj.to_owned(),
+            label,
+            payload,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct StreamPy<'py> {
+    // `obj` is retained for identity registration (a `send` operation references
+    // the same object). `src`/`dst` stay as `Bound` so the coprocessor endpoint
+    // can be resolved by identity (`None` means the control system).
+    pub obj: Bound<'py, PyAny>,
+    pub uid: Option<String>,
+    pub src: Option<Bound<'py, PyAny>>,
+    pub dst: Option<Bound<'py, PyAny>>,
+    pub link: Option<String>,
+    pub fields: Vec<StructFieldPy<'py>>,
+}
+
+impl<'py> FromPyObject<'_, 'py> for StreamPy<'py> {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, 'py, PyAny>) -> Result<Self, Self::Error> {
+        let py = obj.py();
+        let opt_bound = |name| -> PyResult<Option<Bound<'py, PyAny>>> {
+            let v = obj.getattr(name)?;
+            Ok(if v.is_none() { None } else { Some(v) })
+        };
+        // Fields are stored in an insertion-ordered dict; serialize by value in
+        // schema declaration order.
+        let fields = obj
+            .getattr(intern!(py, "fields"))?
+            .call_method0(intern!(py, "values"))?
+            .try_iter()?
+            .map(|item| item.and_then(|i| i.extract()))
+            .collect::<PyResult<_>>()?;
+        Ok(Self {
+            obj: obj.to_owned(),
+            uid: obj.getattr(intern!(py, "uid"))?.extract()?,
+            src: opt_bound(intern!(py, "src"))?,
+            dst: opt_bound(intern!(py, "dst"))?,
+            link: obj.getattr(intern!(py, "link"))?.extract()?,
+            fields,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct StructFieldPy<'py> {
+    pub name: String,
+    pub ty: Bound<'py, PyAny>,
+    pub binding: FieldBindingPy<'py>,
+}
+
+impl<'py> FromPyObject<'_, 'py> for StructFieldPy<'py> {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, 'py, PyAny>) -> Result<Self, Self::Error> {
+        let py = obj.py();
+        Ok(Self {
+            name: obj.getattr(intern!(py, "name"))?.extract()?,
+            ty: obj.getattr(intern!(py, "type"))?,
+            binding: obj.extract()?,
+        })
+    }
+}
+#[derive(Debug)]
+pub(crate) enum FieldBindingPy<'py> {
+    OutboundHandles(Vec<String>),
+    InboundScalar(Option<Bound<'py, PyAny>>),
+    InboundPulse(Option<Bound<'py, PyAny>>),
+    Unbound,
+}
+
+impl<'py> FromPyObject<'_, 'py> for FieldBindingPy<'py> {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, 'py, PyAny>) -> Result<Self, Self::Error> {
+        let py = obj.py();
+        let opt_target = || -> PyResult<Option<Bound<'py, PyAny>>> {
+            let t = obj.getattr(intern!(py, "target"))?;
+            Ok(if t.is_none() { None } else { Some(t) })
+        };
+        let class_name = obj.get_type().name()?.to_string();
+        Ok(match class_name.as_str() {
+            "_OutboundHandlesField" => {
+                Self::OutboundHandles(obj.getattr(intern!(py, "handles"))?.extract()?)
+            }
+            "_InboundScalarField" => Self::InboundScalar(opt_target()?),
+            "_InboundPulseField" => Self::InboundPulse(opt_target()?),
+            "_OutboundLiteralField" | "_FieldAccessor" => Self::Unbound,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown stream field accessor: {other}"
+                )));
+            }
+        })
+    }
 }
 
 #[derive(FromPyObject, Debug)]

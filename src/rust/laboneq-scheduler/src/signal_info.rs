@@ -1,17 +1,23 @@
 // Copyright 2025 Zurich Instruments AG
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module defines signal information that is required by
-//! the Scheduler.
 use crate::utils::SignalGridInfo;
-use laboneq_common::{device_traits::DeviceTraits, types::AwgKey};
+use laboneq_common::types::AwgKey;
 use laboneq_dsl::types::{AmplifierPump, Oscillator, SignalUid, ValueOrParameter};
+use laboneq_units::duration::{Duration, Frequency, Hertz, Second};
 
+/// Everything the scheduler needs to know about a signal.
+///
+/// Hardware properties are exposed one by one, so the scheduler never sees the device.
 pub trait SignalInfo {
     fn uid(&self) -> SignalUid;
     fn awg_key(&self) -> AwgKey;
     fn sampling_rate(&self) -> f64;
-    fn device_traits(&self) -> &'static DeviceTraits;
+    /// Rate at which the sequencer issues instructions.
+    fn sequencer_rate(&self) -> f64;
+    fn oscillator_set_latency(&self) -> Duration<Second>;
+    fn oscillator_reset_duration(&self) -> Duration<Second>;
+    fn lo_frequency_granularity(&self) -> Option<Frequency<Hertz>>;
     fn oscillator(&self) -> Option<&Oscillator>;
     fn lo_frequency(&self) -> Option<&ValueOrParameter<f64>>;
     fn supports_initial_oscillator_frequency(&self) -> bool;
@@ -30,7 +36,7 @@ impl<T: SignalInfo> SignalGridInfo for T {
         self.sampling_rate()
     }
 
-    fn sample_multiple(&self) -> u16 {
-        self.device_traits().sample_multiple
+    fn sequencer_rate(&self) -> f64 {
+        self.sequencer_rate()
     }
 }

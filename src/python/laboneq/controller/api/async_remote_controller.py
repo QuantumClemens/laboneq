@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
@@ -21,12 +22,18 @@ from laboneq.controller.controller import SubmissionStatus
 from laboneq.serializers import from_dict, to_dict
 
 if TYPE_CHECKING:
+    from laboneq.data.instrument_topology import InstrumentTopology
     from laboneq.data.scheduled_experiment import ScheduledExperiment
     from laboneq.dsl.device.device_setup import DeviceSetup
     from laboneq.dsl.result.results import Results
 
 
 class AsyncRemoteController(AsyncControllerAPI):
+    #: Total time to wait for the controller service to become ready on connect.
+    _READYZ_TIMEOUT_S: float = 60.0
+    #: Delay between successive readiness polls.
+    _READYZ_POLL_INTERVAL_S: float = 0.5
+
     @staticmethod
     async def create(
         remote_url: str,
@@ -60,7 +67,33 @@ class AsyncRemoteController(AsyncControllerAPI):
             ).lower()
 
     async def _connect(self):
-        pass
+        await self._wait_until_ready()
+
+    async def _wait_until_ready(self) -> None:
+        """Poll the controller service's `/readyz` endpoint until it is ready.
+
+        The service may still be starting up (connecting to hardware, or
+        booting in emulation mode) when the client first tries to reach it;
+        retry until it reports ready or `_READYZ_TIMEOUT_S` elapses.
+        """
+        url = f"{self._remote_url}/readyz"
+        deadline = time.monotonic() + self._READYZ_TIMEOUT_S
+        last_error = "no response received"
+        while True:
+            try:
+                async with httpx.AsyncClient(transport=self._transport) as client:
+                    resp = await client.get(url, headers=self._headers)
+                if resp.status_code == 200:
+                    return
+                last_error = f"{resp.status_code}: {resp.text}"
+            except httpx.HTTPError as exc:
+                last_error = str(exc)
+            if time.monotonic() >= deadline:
+                raise APIError(
+                    f"Controller service at {self._remote_url} did not become "
+                    f"ready within {self._READYZ_TIMEOUT_S:.0f}s: {last_error}"
+                )
+            await asyncio.sleep(self._READYZ_POLL_INTERVAL_S)
 
     async def aclose(self):
         pass
@@ -68,6 +101,12 @@ class AsyncRemoteController(AsyncControllerAPI):
     async def get_default_devicesetup(self) -> DeviceSetup:
         data = await self._request_json("GET", "v1/devicesetup")
         return cast("DeviceSetup", from_dict(data["device_setup"]))
+
+    async def get_instrument_topology(self) -> InstrumentTopology:
+        data = await self._request_json("GET", "v1/instrumenttopology")
+        if data.get("instrument_topology") is None:
+            raise APIError("Server has no instrument topology configured")
+        return cast("InstrumentTopology", from_dict(data["instrument_topology"]))
 
     async def submit_experiment(
         self,

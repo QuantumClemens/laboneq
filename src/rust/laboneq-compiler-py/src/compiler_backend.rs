@@ -6,19 +6,21 @@ use std::collections::HashMap;
 
 use laboneq_dsl::experiment_signal::ExperimentSignal;
 use pyo3::prelude::*;
-use smallvec::SmallVec;
 use tracing::instrument;
 
 use laboneq_common::compiler_settings::CompilerSettings;
 use laboneq_ir::ExperimentIr;
-use laboneq_py_utils::py_object_interner::PyObjectInterner;
+use laboneq_py_utils::py_object_store::PyObjectStore;
 use numeric_array::NumericArray;
 
 use laboneq_common::named_id::NamedIdStore;
 use laboneq_common::types::AwgKey;
 use laboneq_dsl::ExperimentNode;
 use laboneq_dsl::device_setup::SetupDescription;
-use laboneq_dsl::types::{ExternalParameterUid, ParameterUid, PulseDef, PulseUid, SignalUid};
+use laboneq_dsl::hqcs::{self, HqcsDeclarations};
+use laboneq_dsl::types::{
+    ExternalParameterUid, HandleUid, ParameterUid, PulseDef, PulseUid, SignalUid,
+};
 use laboneq_ir::system::AwgDevice;
 use laboneq_units::duration::{Duration, Second};
 
@@ -39,9 +41,14 @@ pub type ParameterValues = NumericArray;
 /// Each hardware family (QCCS, ZQCS, etc.) implements this trait to translate
 /// the hardware-agnostic experiment representation into [`PreprocessedBackendData`]
 /// that the rest of the compiler can query.
-pub trait CompilerBackend {
-    type Output: PreprocessedBackendData;
-    type CodeGenArtifact: CodeGenArtifact;
+///
+/// `Send + Sync + 'static`: the backend ends up stored in `Arc<dyn DynCompilerBackend>` on
+/// a Python object shared across Python-bound calls.
+pub trait CompilerBackend: Clone + Send + Sync + 'static {
+    type Output: PreprocessedBackendData + Send + Sync;
+    type CodeGenArtifact: CodeGenArtifact + Send + Sync + 'static;
+    type CompilerArtifact: CompilerArtifact;
+    type CombinedOutput: CombinedOutput;
 
     /// Analyze the experiment against the target device setup and produce
     /// hardware-specific data needed for subsequent compilation stages.
@@ -54,11 +61,22 @@ pub trait CompilerBackend {
         experiment: ExperimentView,
     ) -> CompilerBackendResult<PreprocessOutput<Self::Output>>;
 
+    /// Decide how to handle HQCS content right after deserialization, before
+    /// any other processing sees the tree. Default is to refuse anything.
+    fn process_hqcs(
+        &self,
+        root: &mut ExperimentNode,
+        hqcs: &HqcsDeclarations,
+        id_store: &NamedIdStore,
+    ) -> CompilerBackendResult<()> {
+        refuse_hqcs(root, hqcs, id_store)
+    }
+
     fn generate_code(
         &self,
         experiment: ExperimentIr,
         compiler_settings: &CompilerSettings,
-        py_object_store: &PyObjectInterner<ExternalParameterUid>,
+        py_object_store: &PyObjectStore<ExternalParameterUid>,
         backend_data: &Self::Output,
     ) -> CompilerBackendResult<Self::CodeGenArtifact>;
 
@@ -67,7 +85,7 @@ pub trait CompilerBackend {
         &self,
         experiment: ExperimentIr,
         compiler_settings: &CompilerSettings,
-        py_object_store: &PyObjectInterner<ExternalParameterUid>,
+        py_object_store: &PyObjectStore<ExternalParameterUid>,
         backend_data: &Self::Output,
     ) -> CompilerBackendResult<Self::CodeGenArtifact> {
         self.generate_code(experiment, compiler_settings, py_object_store, backend_data)
@@ -87,6 +105,56 @@ pub trait CompilerBackend {
     {
         Ok(None)
     }
+
+    /// Extract this backend's [`CombinedOutput`] from the Python object (`CombinedOutput`)
+    /// produced by the linking stage.
+    ///
+    /// NOTE: This is a temporary workaround as long as the compiler calls Python code that requires this information.
+    /// Once the compiler is refactored to be fully Rust-based, this method can be removed
+    /// and replaced with a more direct approach.
+    fn combined_output_from_py(
+        &self,
+        obj: &Bound<'_, PyAny>,
+    ) -> CompilerBackendResult<Self::CombinedOutput>;
+
+    /// Finalize the compilation output from the linked [`CombinedOutput`], producing
+    /// the final [`CompilerArtifact`].
+    fn finalize(
+        &self,
+        combined: Self::CombinedOutput,
+    ) -> CompilerBackendResult<CompilationOutput<Self::CompilerArtifact>>;
+}
+
+pub fn refuse_hqcs(
+    root: &ExperimentNode,
+    hqcs: &HqcsDeclarations,
+    id_store: &NamedIdStore,
+) -> CompilerBackendResult<()> {
+    let construct = hqcs::find_hqcs_declaration(hqcs)
+        .map(str::to_owned)
+        .or_else(|| hqcs::find_hqcs_construct(root, id_store));
+    match construct {
+        Some(construct) => Err(laboneq_error::laboneq_error!(
+            "HQCS constructs found in experiment ({construct}); not yet supported by the compiler."
+        )),
+        None => Ok(()),
+    }
+}
+
+/// A combined (linked) real-time compilation output.
+pub trait CombinedOutput {
+    /// Resolve the raw acquisition length (in samples) for each requested signal/handle pair.
+    fn raw_acquisition_lengths(
+        &self,
+        pairs: &[(SignalUid, HandleUid)],
+        id_store: &NamedIdStore,
+    ) -> CompilerBackendResult<Vec<(SignalUid, HandleUid, usize)>>;
+
+    /// Total duration of the real-time steps, in seconds.
+    fn total_execution_time(&self) -> CompilerBackendResult<f64>;
+
+    /// Maximum duration of a single real-time step, in seconds.
+    fn max_execution_time_per_step(&self) -> CompilerBackendResult<f64>;
 }
 
 /// A view of the experiment and device setup passed to a [`CompilerBackend`].
@@ -156,6 +224,21 @@ pub trait CodeGenArtifact {
     fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>>;
 }
 
+/// A compiler artifact produced by a [`CompilerBackend`].
+pub trait CompilerArtifact {
+    /// Convert the artifact to a Python object for returning to the user.
+    fn to_python<'py>(
+        &mut self,
+        py: Python<'py>,
+        id_store: &NamedIdStore,
+        py_object_store: &PyObjectStore<ExternalParameterUid>,
+    ) -> PyResult<Bound<'py, PyAny>>;
+}
+
+pub struct CompilationOutput<T: CompilerArtifact> {
+    pub artifacts: T,
+}
+
 /// Object-safe version of [`CompilerBackend`] for storage in `ExperimentPy`.
 ///
 /// `CompilerBackend` cannot be used as a trait object directly because its associated types
@@ -173,7 +256,7 @@ pub(crate) trait DynCompilerBackend: Send + Sync {
         &self,
         experiment: ExperimentIr,
         compiler_settings: &CompilerSettings,
-        py_object_store: &PyObjectInterner<ExternalParameterUid>,
+        py_object_store: &PyObjectStore<ExternalParameterUid>,
         backend_data: &(dyn PreprocessedBackendData + Send + Sync),
     ) -> CompilerBackendResult<Box<dyn CodeGenArtifact + Send + Sync>>;
 
@@ -186,15 +269,13 @@ pub(crate) trait DynCompilerBackend: Send + Sync {
 
 impl<B> DynCompilerBackend for B
 where
-    B: CompilerBackend + Send + Sync,
-    B::Output: Send + Sync + 'static,
-    B::CodeGenArtifact: Send + Sync + 'static,
+    B: CompilerBackend,
 {
     fn generate_code_dyn(
         &self,
         experiment: ExperimentIr,
         compiler_settings: &CompilerSettings,
-        py_object_store: &PyObjectInterner<ExternalParameterUid>,
+        py_object_store: &PyObjectStore<ExternalParameterUid>,
         backend_data: &(dyn PreprocessedBackendData + Send + Sync),
     ) -> CompilerBackendResult<Box<dyn CodeGenArtifact + Send + Sync>> {
         let data = backend_data
@@ -220,9 +301,6 @@ where
 pub trait PreprocessedBackendData: Any {
     /// Get AWG key for signal. Required for all valid signals.
     fn awg_key(&self, signal_uid: SignalUid) -> CompilerBackendResult<AwgKey>;
-
-    /// Get channels for signal. May not be available for all backends/devices.
-    fn channels(&self, signal_uid: SignalUid) -> Option<&SmallVec<[u16; 4]>>;
 
     /// Get lead delay for signal.
     fn lead_delay(&self, signal_uid: SignalUid) -> Duration<Second>;

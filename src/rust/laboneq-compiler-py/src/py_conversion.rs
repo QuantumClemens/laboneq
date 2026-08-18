@@ -27,6 +27,12 @@ pub(crate) enum DslType {
     PrngLoop,
     SetNode,
     ResetOscillatorPhase,
+    HqcsDoUntilSection,
+    HqcsSend,
+    HqcsMarkStale,
+    HqcsVariable,
+    HqcsPredicate,
+    HqcsIsLive,
 }
 
 pub(crate) struct DslTypes<'a> {
@@ -48,6 +54,12 @@ pub(crate) struct DslTypes<'a> {
     prng_loop: Bound<'a, PyAny>,
     set_node: Bound<'a, PyAny>,
     reset_oscillator_phase: Bound<'a, PyAny>,
+    hqcs_do_until: Bound<'a, PyAny>,
+    hqcs_send: Bound<'a, PyAny>,
+    hqcs_mark_stale: Bound<'a, PyAny>,
+    hqcs_variable: Bound<'a, PyAny>,
+    hqcs_predicate: Bound<'a, PyAny>,
+    hqcs_is_live: Bound<'a, PyAny>,
 }
 
 impl<'a> DslTypes<'a> {
@@ -106,6 +118,24 @@ impl<'a> DslTypes<'a> {
         let reset_oscillator_phase = py
             .import(intern!(py, "laboneq.dsl.experiment.reset_oscillator_phase"))?
             .getattr(intern!(py, "ResetOscillatorPhase"))?;
+        let hqcs_do_until = py
+            .import(intern!(py, "laboneq.dsl.experiment.do_until"))?
+            .getattr(intern!(py, "DoUntilSection"))?;
+        let hqcs_variable = py
+            .import(intern!(py, "laboneq.dsl.variable"))?
+            .getattr(intern!(py, "Variable"))?;
+        let hqcs_send = py
+            .import(intern!(py, "laboneq.dsl.coprocessor.operations"))?
+            .getattr(intern!(py, "_Send"))?;
+        let hqcs_mark_stale = py
+            .import(intern!(py, "laboneq.dsl.coprocessor.operations"))?
+            .getattr(intern!(py, "_MarkStale"))?;
+        let hqcs_predicate = py
+            .import(intern!(py, "laboneq.dsl.coprocessor.predicate"))?
+            .getattr(intern!(py, "_Predicate"))?;
+        let hqcs_is_live = py
+            .import(intern!(py, "laboneq.dsl.coprocessor.predicate"))?
+            .getattr(intern!(py, "_IsLive"))?;
 
         Ok(Self {
             linear_sweep_parameter,
@@ -126,6 +156,12 @@ impl<'a> DslTypes<'a> {
             prng_loop,
             set_node,
             reset_oscillator_phase,
+            hqcs_do_until,
+            hqcs_send,
+            hqcs_mark_stale,
+            hqcs_variable,
+            hqcs_predicate,
+            hqcs_is_live,
         })
     }
 
@@ -149,6 +185,12 @@ impl<'a> DslTypes<'a> {
             DslType::PrngLoop => &self.prng_loop,
             DslType::SetNode => &self.set_node,
             DslType::ResetOscillatorPhase => &self.reset_oscillator_phase,
+            DslType::HqcsDoUntilSection => &self.hqcs_do_until,
+            DslType::HqcsSend => &self.hqcs_send,
+            DslType::HqcsMarkStale => &self.hqcs_mark_stale,
+            DslType::HqcsVariable => &self.hqcs_variable,
+            DslType::HqcsPredicate => &self.hqcs_predicate,
+            DslType::HqcsIsLive => &self.hqcs_is_live,
         }
     }
 }

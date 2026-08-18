@@ -19,9 +19,7 @@ from laboneq.dsl.experiment.context import (
     pop_context,
     push_context,
 )
-from laboneq.dsl.experiment.experiment_context import (
-    current_experiment_context,
-)
+from laboneq.dsl.experiment.experiment_context import current_experiment_context
 from laboneq.dsl.experiment.section import (
     AcquireLoopRt,
     Case,
@@ -32,6 +30,7 @@ from laboneq.dsl.experiment.section import (
     Sweep,
 )
 from laboneq.dsl.experiment.uid_generator import GLOBAL_UID_GENERATOR
+from laboneq.dsl.variable import Variable
 
 if TYPE_CHECKING:
     from laboneq.dsl import Parameter
@@ -241,11 +240,21 @@ class MatchSectionContextManager(SectionContextManagerBase):
         user_register: int | None = None,
         prng_sample: PRNGSample | None = None,
         sweep_parameter: Parameter | None = None,
+        variable=None,
         uid=None,
         name=None,
         play_after=None,
         local=None,
     ):
+        if isinstance(handle, Variable):
+            if variable is not None:
+                raise LabOneQException(
+                    "match() received a Variable positionally as `handle` and"
+                    " also an explicit `variable` argument; only one may be given."
+                )
+            variable = handle
+            handle = None
+
         kwargs = {}
         if uid is not None:
             kwargs["uid"] = uid
@@ -261,6 +270,8 @@ class MatchSectionContextManager(SectionContextManagerBase):
             kwargs["prng_sample"] = prng_sample
         if sweep_parameter is not None:
             kwargs["sweep_parameter"] = sweep_parameter
+        if variable is not None:
+            kwargs["variable"] = variable
         if local is not None:
             kwargs["local"] = local
         super().__init__(kwargs=kwargs)

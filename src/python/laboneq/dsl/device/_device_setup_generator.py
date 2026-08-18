@@ -29,6 +29,7 @@ from laboneq.dsl.device.instruments import (
 from laboneq.dsl.device.servers import DataServer
 
 if TYPE_CHECKING:
+    from laboneq.data.instrument_topology import InstrumentTopology
     from laboneq.dsl.device.device_setup import DeviceSetup
     from laboneq.dsl.device.logical_signal_group import LogicalSignalGroup
     from laboneq.dsl.quantum import QuantumElement
@@ -70,6 +71,24 @@ T_EXTCLK = "external_clock_signal"
 T_INTCLK = "internal_clock_signal"
 T_PORT = "port"
 T_PORTS = "ports"
+
+_INSTRUMENT_TOPOLOGY_DEVICE_CLASSES = {
+    T_HDAWG_DEVICE: HDAWG,
+    T_UHFQA_DEVICE: UHFQA,
+    T_SHFQA_DEVICE: SHFQA,
+    T_SHFSG_DEVICE: SHFSG,
+    T_SHFQC_DEVICE: SHFQC,
+    T_ZQCS_DEVICE: ZQCS,
+    T_SHFPPC_DEVICE: SHFPPC,
+    T_PQSC_DEVICE: PQSC,
+    T_QHUB_DEVICE: QHUB,
+}
+
+_SIGNAL_TYPE_TO_CONNECTION_TYPE = {
+    T_IQ_SIGNAL: "iq",
+    T_RF_SIGNAL: "rf",
+    T_ACQUIRE_SIGNAL: "acquire",
+}
 
 
 # Models 'instruments' (former 'instrument_list') part of the descriptor:
@@ -540,4 +559,90 @@ class _DeviceSetupGenerator:
                 "transmon": quantum.Transmon,
             },
         )
+        return setup
+
+    @staticmethod
+    def from_instrument_topology(
+        instrument_topology: InstrumentTopology,
+        uid: str | None = None,
+    ) -> DeviceSetup:
+        # To avoid circular imports
+        from laboneq.dsl.device.device_setup import DeviceSetup
+
+        setup = DeviceSetup(
+            **_skip_nones(
+                uid=uid,
+                setup_description=instrument_topology.setup_description,
+            )
+        )
+        # Assigned rather than passed to the constructor: dispatching to a
+        # controller service is a transport detail, not part of the setup's
+        # public description.
+        setup.controller_service_url = instrument_topology.controller_service_url
+
+        if instrument_topology.servers:
+            for server in instrument_topology.servers:
+                setup.add_dataserver(
+                    host=server.host if server.host is not None else "",
+                    port=server.port if server.port is not None else 8004,
+                    uid=server.uid,
+                )
+
+        for instrument in instrument_topology.instruments:
+            options = "/".join(instrument.options) if instrument.options else None
+            device_cls = _INSTRUMENT_TOPOLOGY_DEVICE_CLASSES.get(instrument.device_type)
+            if device_cls is not None:
+                dev = device_cls(
+                    uid=instrument.uid,
+                    address=instrument.address,
+                    **_skip_nones(
+                        server_uid=instrument.server_uid,
+                        interface=instrument.interface,
+                        device_options=options,
+                        reference_clock_source=instrument.reference_clock_source,
+                    ),
+                )
+            else:
+                dev = NonQC(
+                    uid=instrument.uid,
+                    address=instrument.address,
+                    dev_type=instrument.device_type,
+                    **_skip_nones(
+                        server_uid=instrument.server_uid,
+                        interface=instrument.interface,
+                        device_options=options,
+                        reference_clock_source=instrument.reference_clock_source,
+                    ),
+                )
+            setup.add_instruments(dev)
+
+        connections_by_instrument: dict[
+            str, list[SignalConnection | InternalConnection]
+        ] = {}
+        connection: SignalConnection | InternalConnection
+        for entry in instrument_topology.connections:
+            if entry.signal_type is not None:
+                connection_type = _SIGNAL_TYPE_TO_CONNECTION_TYPE.get(entry.signal_type)
+                if connection_type is None:
+                    raise LabOneQException(
+                        f"Instrument '{entry.instrument_uid}': unrecognized "
+                        f"signal_type '{entry.signal_type}'."
+                    )
+                ports = [entry.primary_port]
+                if entry.secondary_port is not None:
+                    ports.append(entry.secondary_port)
+                connection = SignalConnection(
+                    uid=entry.signal_name, type=connection_type, ports=ports
+                )
+            else:
+                connection = InternalConnection(
+                    to=entry.primary_port, from_port=entry.secondary_port
+                )
+            connections_by_instrument.setdefault(entry.instrument_uid, []).append(
+                connection
+            )
+
+        for instrument_uid, connections in connections_by_instrument.items():
+            setup.add_connections(instrument_uid, *connections)
+
         return setup

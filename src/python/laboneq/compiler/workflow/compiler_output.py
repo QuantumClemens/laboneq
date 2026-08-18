@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from laboneq._rust import compiler as compiler_rs
     from laboneq.compiler.common.iface_compiler_output import (
         CombinedOutput,
     )
@@ -18,4 +19,4 @@ class CombinedRTCompilerOutputContainer:
 
     device_class: int
     combined_output: CombinedOutput
-    schedule: dict[str, Any] | None = None
+    schedule: compiler_rs.PulseSheetSchedule | None = None

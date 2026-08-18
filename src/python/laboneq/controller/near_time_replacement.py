@@ -8,11 +8,11 @@ from functools import singledispatch
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
-import zhinst.utils  # type: ignore[import-untyped]
 
 from laboneq.controller.devices.device_collection import DeviceCollection
 from laboneq.controller.devices.device_zi import DeviceBase
 from laboneq.controller.recipe_processor import RecipeData, WaveformItem
+from laboneq.controller.utilities.awg_waveform import convert_awg_waveform
 from laboneq.controller.utilities.exception import LabOneQControllerException
 from laboneq.core.utilities.replace_phase_increment import calc_ct_replacement
 from laboneq.core.utilities.replace_pulse import ReplacementType, calc_wave_replacements
@@ -175,7 +175,7 @@ def _process_pulse_replacements(
                 if repl.replacement_type == ReplacementType.I_Q:
                     assert isinstance(repl.samples, list)
                     clipped = np.clip(repl.samples, -1.0, 1.0)
-                    bin_wave = zhinst.utils.convert_awg_waveform(*clipped)
+                    bin_wave = convert_awg_waveform()(*clipped)
                     device.add_waveform_replacement(
                         awg_index=awg_key.awg_index,
                         wave=WaveformItem(

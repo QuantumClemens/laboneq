@@ -20,11 +20,11 @@ use crate::compiler_backend::CompilerBackend;
 use crate::compiler_backend::ExperimentView;
 use crate::error::{Error, Result as CompilerResult, create_error_message};
 use crate::experiment::Experiment;
-use crate::experiment_context::ExperimentContext;
-use crate::experiment_context::experiment_context_from_experiment;
 use crate::experiment_processor::process_experiment;
 use crate::experiment_validation::validate_experiment;
+use crate::py_compiler_output::build_scheduled_experiment_py;
 use crate::py_experiment::ExperimentPy;
+use crate::py_pulse_sheet_schedule::PulseSheetSchedulePy;
 use crate::result_shape::ResultShapes;
 use crate::result_shape::extract_result_shapes;
 use crate::rt_compiler::RealTimeCompilerInput;
@@ -38,11 +38,9 @@ use laboneq_tracing::with_tracing;
 
 use laboneq_common::compiler_settings::CompilerSettings;
 use laboneq_common::named_id::{NamedIdStore, resolve_ids};
-use laboneq_dsl::types::ExternalParameterUid;
 use laboneq_ir::ExperimentIr;
 use laboneq_ir::pulse_sheet_schedule::PulseSheetSchedule;
 use laboneq_ir::system::DeviceSetup;
-use laboneq_py_utils::py_object_interner::PyObjectInterner;
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -56,18 +54,20 @@ pub(crate) mod capnp_deserializer;
 mod capnp_py_types;
 pub(crate) mod capnp_serializer;
 mod chunking_mode;
+mod compiled_experiment;
 mod compiler;
 pub mod compiler_backend;
 mod execution;
 pub(crate) mod experiment;
-mod experiment_context;
 mod experiment_processor;
 mod experiment_validation;
+mod py_compiler_output;
 mod py_conversion;
 mod py_execution;
 pub mod py_experiment;
 mod py_helpers;
-mod py_result_shape;
+mod py_pulse_sheet_schedule;
+mod real_time_loop;
 mod result_shape;
 mod rt_compiler;
 mod setup_processor;
@@ -85,21 +85,17 @@ fn serialize_experiment_py(
         .then(|| attach_otel_context(py))
         .transpose()?;
     with_tracing(|| capnp_serializer::serialize_experiment(py, experiment, device_setup, packed))
+        .map_err(|e| Error::new(create_error_message(e)))
 }
 
 /// Build an experiment from Cap'n Proto bytes plus device/signal configuration.
-pub fn compile_experiment<'py, B>(
+pub fn compile_experiment<'py, B: CompilerBackend>(
     py: Python<'py>,
     capnp_data: &[u8],
     packed: bool,
     compiler_settings: Option<Bound<'_, PyDict>>,
     backend: B,
-) -> PyResult<Bound<'py, PyAny>>
-where
-    B: CompilerBackend + Send + Sync + 'static,
-    B::Output: Send + Sync + 'static,
-    B::CodeGenArtifact: Send + Sync + 'static,
-{
+) -> PyResult<Bound<'py, PyAny>> {
     let _context_guard = tracing_is_enabled()
         .then(|| attach_otel_context(py))
         .transpose()?;
@@ -112,9 +108,15 @@ where
 
     with_tracing(|| {
         let processed = build_experiment_capnp(py, capnp_data, packed, &backend)?;
+
         let id_store = Arc::clone(&processed.inner.id_store);
-        let scheduled_experiment = run_compilation(py, backend, processed, compiler_settings)
+        let py_object_store = Arc::clone(&processed.inner.py_object_store);
+
+        let compiled_experiment = run_compilation(py, backend, processed, compiler_settings)
             .map_err(|e| e.to_pyerr(|s| resolve_ids(&s, &id_store)))?;
+
+        let scheduled_experiment =
+            build_scheduled_experiment_py(py, compiled_experiment, &id_store, &py_object_store)?;
         Ok(scheduled_experiment)
     })
 }
@@ -124,7 +126,6 @@ pub struct ProcessedExperiment<D> {
     // NOTE: The usage of Arc here is to allow sharing the id_store across Python bindings
     // Remove when Python bindings are no longer needed
     device_setup: Arc<DeviceSetup>,
-    context: ExperimentContext,
     /// Delay compensation for signals on devices.
     delay_compensation: DelayRegistry,
     backend_data: D,
@@ -147,11 +148,17 @@ fn build_experiment_capnp<B: CompilerBackend>(
     // 1. Deserialize the experiment tree from Cap'n Proto.
     let mut deserialized = capnp_deserializer::deserialize_experiment(py, capnp_data, packed)?;
 
-    // Register the PyObjects
-    let mut py_object_store = PyObjectInterner::<ExternalParameterUid>::new();
-    for (uid, value) in deserialized.external_parameter_values {
-        py_object_store.insert(uid, value);
-    }
+    backend
+        .process_hqcs(
+            &mut deserialized.root,
+            &deserialized.hqcs,
+            &deserialized.id_store,
+        )
+        .map_err(|e| {
+            let msg = create_error_message(e);
+            Error::new(resolve_ids(&msg, &deserialized.id_store))
+        })?;
+
     let backend_processed = backend
         .preprocess_experiment(ExperimentView::new(
             &deserialized.root,
@@ -159,7 +166,7 @@ fn build_experiment_capnp<B: CompilerBackend>(
             deserialized
                 .parameters
                 .iter()
-                .map(|(k, v)| (*k, v.inner_values().as_ref()))
+                .map(|p| (p.uid, p.inner_values().as_ref()))
                 .collect(),
             &deserialized.pulses,
             deserialized.experiment_signals.clone(),
@@ -175,13 +182,9 @@ fn build_experiment_capnp<B: CompilerBackend>(
         id_store: deserialized.id_store.into(),
         parameters: deserialized.parameters,
         pulses: deserialized.pulses,
-        py_object_store: py_object_store.into(),
+        py_object_store: deserialized.external_parameter_values.into(),
+        hqcs: deserialized.hqcs,
     };
-
-    let context = experiment_context_from_experiment(&experiment).map_err(|e| {
-        let msg = create_error_message(e);
-        Error::new(resolve_ids(&msg, &experiment.id_store))
-    })?;
 
     let processed_setup = process_setup(
         SetupProperties {
@@ -190,7 +193,6 @@ fn build_experiment_capnp<B: CompilerBackend>(
         },
         &backend_processed.backend_data,
         &experiment.id_store,
-        &context,
     )
     .map_err(|e| {
         let msg = create_error_message(e);
@@ -209,7 +211,7 @@ fn build_experiment_capnp<B: CompilerBackend>(
     })?;
     let result_shapes = extract_result_shapes(
         &experiment.root,
-        experiment.parameters.values(),
+        experiment.parameters.iter(),
         Arc::get_mut(&mut experiment.id_store).expect("Expected no additional ID stores"),
     )
     .map_err(|e| {
@@ -220,7 +222,6 @@ fn build_experiment_capnp<B: CompilerBackend>(
     let res = ProcessedExperiment {
         inner: experiment,
         device_setup: Arc::new(device_setup),
-        context,
         delay_compensation: processed_setup.on_device_delays,
         backend_data: backend_processed.backend_data,
         result_shapes,
@@ -235,7 +236,7 @@ struct RealTimeCompilerOutputPy {
     #[pyo3(get)]
     used_parameters: HashSet<String>,
     #[pyo3(get)]
-    pulse_sheet_schedule: Option<Py<PyAny>>,
+    pulse_sheet_schedule: Option<Py<PulseSheetSchedulePy>>,
     codegen_output: Py<PyAny>,
 }
 
@@ -265,7 +266,6 @@ fn compile_realtime_py(
             })
             .collect::<Result<HashMap<ParameterUid, NumericLiteral>, LabOneQError>>()?,
         chunking_info,
-        context: &experiment.context,
         backend: experiment.backend.as_ref(),
         backend_data: experiment.backend_data.as_ref(),
         device_setup: &experiment.device_setup,
@@ -282,11 +282,8 @@ fn compile_realtime_py(
             .collect(),
         pulse_sheet_schedule: result
             .pulse_sheet_schedule
-            .as_ref()
-            .map(|s| schedule_to_py(py, s))
-            .transpose()
-            .map_err(|e| laboneq_error::laboneq_error!("{e}"))?
-            .map(|s| s.unbind()),
+            .map(|inner| Py::new(py, PulseSheetSchedulePy { inner }))
+            .transpose()?,
         codegen_output: result.codegen_output.to_python(py)?.into(),
     };
     Ok(result_py)
@@ -319,85 +316,6 @@ fn prepare_schedule(
         ir.id_store,
     );
     Some(out)
-}
-
-/// Convert a [`PulseSheetSchedule`] to a Python dict for consumption in Python.
-///
-/// # Returns
-/// A Python dict containing:
-/// - event_list: List of scheduler events
-/// - event_list_truncated: Whether event generation hit the max_events limit
-/// - section_info: Section metadata with preorder map
-/// - section_signals_with_children: Signal hierarchy per section
-fn schedule_to_py<'py>(
-    py: Python<'py>,
-    schedule: &PulseSheetSchedule,
-) -> CompilerResult<Bound<'py, PyAny>> {
-    // Convert to JSON then to Python dict
-    let json_value = serde_json::to_value(schedule)
-        .map_err(|e| Error::new(format!("Failed to serialize schedule: {}", e)))?;
-    // Convert JSON to Python object
-    json_to_py(py, &json_value)
-}
-
-/// Helper function to convert serde_json::Value to Python objects
-fn json_to_py<'py>(
-    py: Python<'py>,
-    value: &serde_json::Value,
-) -> CompilerResult<Bound<'py, PyAny>> {
-    use pyo3::IntoPyObject;
-    use pyo3::types::{PyDict, PyList};
-    use serde_json::Value;
-
-    match value {
-        Value::Null => Ok(py.None().into_bound(py)),
-        Value::Bool(b) => {
-            let py_bool = b
-                .into_pyobject(py)
-                .map_err(|e| Error::new(format!("Failed to convert bool: {}", e)))?;
-            Ok(py_bool.to_owned().into_any())
-        }
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                let py_int = i
-                    .into_pyobject(py)
-                    .map_err(|e| Error::new(format!("Failed to convert i64: {}", e)))?;
-                Ok(py_int.to_owned().into_any())
-            } else if let Some(u) = n.as_u64() {
-                let py_int = u
-                    .into_pyobject(py)
-                    .map_err(|e| Error::new(format!("Failed to convert u64: {}", e)))?;
-                Ok(py_int.to_owned().into_any())
-            } else if let Some(f) = n.as_f64() {
-                let py_float = f
-                    .into_pyobject(py)
-                    .map_err(|e| Error::new(format!("Failed to convert f64: {}", e)))?;
-                Ok(py_float.to_owned().into_any())
-            } else {
-                Err(Error::new("Invalid JSON number"))
-            }
-        }
-        Value::String(s) => {
-            let py_str = s
-                .into_pyobject(py)
-                .map_err(|e| Error::new(format!("Failed to convert string: {}", e)))?;
-            Ok(py_str.to_owned().into_any())
-        }
-        Value::Array(arr) => {
-            let py_list = PyList::empty(py);
-            for item in arr {
-                py_list.append(json_to_py(py, item)?)?;
-            }
-            Ok(py_list.into_any())
-        }
-        Value::Object(obj) => {
-            let py_dict = PyDict::new(py);
-            for (key, val) in obj {
-                py_dict.set_item(key, json_to_py(py, val)?)?;
-            }
-            Ok(py_dict.into_any())
-        }
-    }
 }
 
 #[pyfunction(name = "init_logging")]

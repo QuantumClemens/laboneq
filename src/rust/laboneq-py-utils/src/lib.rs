@@ -7,4 +7,4 @@ pub mod constant_serializer;
 pub mod device_setup_fingerprint;
 pub mod logging;
 pub mod py_export;
-pub mod py_object_interner;
+pub mod py_object_store;

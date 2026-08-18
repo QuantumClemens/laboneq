@@ -2,9 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::num::NonZeroU32;
-use std::sync::Arc;
-
-use numeric_array::NumericArray;
 
 use laboneq_common::named_id::NamedId;
 use laboneq_common::types::Literal;
@@ -17,10 +14,14 @@ use crate::error::Result;
 use crate::experiment::Experiment;
 
 #[derive(Debug, Clone)]
+pub(crate) struct Execution {
+    pub statements: Vec<Statement>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum Statement {
     SetParameter {
         parameter: ParameterUid,
-        values: Arc<NumericArray>,
     },
     /// Loop a fixed number of times.
     Loop {
@@ -42,20 +43,20 @@ pub(crate) enum Statement {
 }
 
 /// Creates a near-time execution for Controller.
-pub(crate) fn create_execution(experiment: &Experiment) -> Result<Vec<Statement>> {
-    NearTimeExecutionBuilder::build(experiment)
+pub(crate) fn create_execution(experiment: &Experiment) -> Result<Execution> {
+    Ok(Execution {
+        statements: NearTimeExecutionBuilder::build(experiment)?,
+    })
 }
 
-struct NearTimeExecutionBuilder<'a> {
-    experiment: &'a Experiment,
-}
+struct NearTimeExecutionBuilder {}
 
-impl<'a> NearTimeExecutionBuilder<'a> {
+impl NearTimeExecutionBuilder {
     fn build(experiment: &Experiment) -> Result<Vec<Statement>> {
-        NearTimeExecutionBuilder { experiment }.visit_node(&experiment.root)
+        NearTimeExecutionBuilder {}.visit_node(&experiment.root)
     }
 
-    fn visit_node(&mut self, node: &'a ExperimentNode) -> Result<Vec<Statement>> {
+    fn visit_node(&mut self, node: &ExperimentNode) -> Result<Vec<Statement>> {
         match &node.kind {
             Operation::Sweep(sweep) => self.visit_sweep(node, sweep),
             Operation::NearTimeCallback(callback) => self.visit_callback(callback),
@@ -65,7 +66,7 @@ impl<'a> NearTimeExecutionBuilder<'a> {
         }
     }
 
-    fn generic_visit(&mut self, node: &'a ExperimentNode) -> Result<Vec<Statement>> {
+    fn generic_visit(&mut self, node: &ExperimentNode) -> Result<Vec<Statement>> {
         let mut statements = Vec::with_capacity(node.children.len());
         for child in &node.children {
             statements.extend(self.visit_node(child)?);
@@ -73,13 +74,11 @@ impl<'a> NearTimeExecutionBuilder<'a> {
         Ok(statements)
     }
 
-    fn visit_sweep(&mut self, node: &'a ExperimentNode, op: &'a Sweep) -> Result<Vec<Statement>> {
+    fn visit_sweep(&mut self, node: &ExperimentNode, op: &Sweep) -> Result<Vec<Statement>> {
         let mut body = Vec::with_capacity(op.parameters.len() + 1);
         for parameter in &op.parameters {
-            let sweep_param = self.experiment.get_sweep_parameter(parameter)?;
             body.push(Statement::SetParameter {
                 parameter: *parameter,
-                values: Arc::clone(sweep_param.inner_values()),
             });
         }
 
@@ -92,7 +91,7 @@ impl<'a> NearTimeExecutionBuilder<'a> {
         Ok(vec![statement])
     }
 
-    fn visit_callback(&mut self, op: &'a NearTimeCallback) -> Result<Vec<Statement>> {
+    fn visit_callback(&mut self, op: &NearTimeCallback) -> Result<Vec<Statement>> {
         let statement = Statement::ExecCallback {
             callback_id: op.callback_id,
             args: op.args.clone(),
@@ -100,7 +99,7 @@ impl<'a> NearTimeExecutionBuilder<'a> {
         Ok(vec![statement])
     }
 
-    fn visit_set_node(&mut self, op: &'a SetNode) -> Result<Vec<Statement>> {
+    fn visit_set_node(&mut self, op: &SetNode) -> Result<Vec<Statement>> {
         let statement = Statement::SetNode {
             path: op.path,
             value: op.value.clone(),

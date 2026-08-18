@@ -1,10 +1,9 @@
 // Copyright 2025 Zurich Instruments AG
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::error::{Error, Result};
 use laboneq_dsl::types::{SectionTimingMode, SignalUid};
 use laboneq_units::tinysample::{TINYSAMPLE_DURATION, TinySamples, tiny_samples};
-// Re-export for convenience
-use crate::error::{Error, Result};
 pub(crate) use num_integer::lcm;
 use num_integer::{div_ceil, div_floor};
 
@@ -12,14 +11,24 @@ use num_integer::{div_ceil, div_floor};
 /// grid size is rejected.
 pub(crate) const STRICT_TIMING_TOLERANCE: i64 = 1000;
 
-fn is_valid_sampling_rate(rate: f64) -> bool {
+fn is_valid_rate(rate: f64) -> bool {
     rate.is_finite() && rate > 0.0 && !rate.is_subnormal()
+}
+
+fn check_rate(kind: &str, rate: f64, signal: &impl SignalGridInfo) -> Result<()> {
+    if !is_valid_rate(rate) {
+        return Err(Error::new(format!(
+            "Invalid {kind} rate {rate} for signal {:?}",
+            signal.uid()
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) trait SignalGridInfo {
     fn uid(&self) -> SignalUid;
     fn sampling_rate(&self) -> f64;
-    fn sample_multiple(&self) -> u16;
+    fn sequencer_rate(&self) -> f64;
 }
 
 pub(crate) fn check_tinysample_commensurability(sampling_rate: f64) -> Result<()> {
@@ -35,41 +44,32 @@ pub(crate) fn check_tinysample_commensurability(sampling_rate: f64) -> Result<()
     Ok(())
 }
 
-/// Compute the signal and sequencer grids for a set of signals.
-///
-/// The signal grid is the least common multiple (LCM) of the signal sampling rates.
-/// The sequencer grid is the LCM of the sequencer rates (sampling rate / sample multiple).
-///
-/// This function will panic if any signal has an invalid sampling rate (non-finite or non-positive).
+/// The least common multiple of the individual signals' grids.
 pub(crate) fn compute_grid<'a, T: SignalGridInfo + Sized + 'a>(
     signals: impl Iterator<Item = &'a T>,
-) -> (TinySamples, TinySamples) {
+) -> Result<(TinySamples, TinySamples)> {
     let mut signals_grid = 1;
     let mut sequencer_grid = 1;
 
     for signal in signals {
-        if !is_valid_sampling_rate(signal.sampling_rate()) {
-            panic!(
-                "Invalid sampling rate: {} for signal {:?}",
-                signal.sampling_rate(),
-                signal.uid()
-            );
-        }
-        let (grid, sequencer) = compute_signal_grids(signal);
+        let (grid, sequencer) = compute_signal_grids(signal)?;
         signals_grid = lcm(signals_grid, grid.value());
         sequencer_grid = lcm(sequencer_grid, sequencer.value());
     }
-    (tiny_samples(signals_grid), tiny_samples(sequencer_grid))
+    Ok((tiny_samples(signals_grid), tiny_samples(sequencer_grid)))
 }
 
-pub(crate) fn compute_signal_grids<'a, T: SignalGridInfo + Sized + 'a>(
+/// Errors if either rate is not positive and finite.
+pub(crate) fn compute_signal_grids<T: SignalGridInfo + Sized>(
     signal: &T,
-) -> (TinySamples, TinySamples) {
+) -> Result<(TinySamples, TinySamples)> {
+    check_rate("sampling", signal.sampling_rate(), signal)?;
+    let sequencer_rate = signal.sequencer_rate();
+    check_rate("sequencer", sequencer_rate, signal)?;
     let signal_grid = signal_grid(signal);
-    let sequencer_rate = signal.sampling_rate() / signal.sample_multiple() as f64;
     let sequencer_grid =
         tiny_samples((1.0 / (TINYSAMPLE_DURATION * sequencer_rate)).round() as i64);
-    (signal_grid, sequencer_grid)
+    Ok((signal_grid, sequencer_grid))
 }
 
 pub(crate) fn signal_grid(signal: &impl SignalGridInfo) -> TinySamples {
@@ -182,14 +182,14 @@ mod tests {
     #[derive(Debug, Clone)]
     struct MySignal {
         sampling_rate: f64,
-        sample_multiple: u16,
+        sequencer_rate: f64,
     }
 
     impl MySignal {
         pub(crate) fn new(sampling_rate: f64, sample_multiple: u16) -> Self {
             Self {
                 sampling_rate,
-                sample_multiple,
+                sequencer_rate: sampling_rate / sample_multiple as f64,
             }
         }
     }
@@ -203,14 +203,30 @@ mod tests {
             self.sampling_rate
         }
 
-        fn sample_multiple(&self) -> u16 {
-            self.sample_multiple
+        fn sequencer_rate(&self) -> f64 {
+            self.sequencer_rate
         }
     }
 
     #[test]
+    fn test_invalid_rates_rejected() {
+        let bad_sampling_rate = MySignal {
+            sampling_rate: 0.0,
+            sequencer_rate: 1.0e8,
+        };
+        assert!(compute_signal_grids(&bad_sampling_rate).is_err());
+
+        let bad_sequencer_rate = MySignal {
+            sampling_rate: 2.0e9,
+            sequencer_rate: f64::NAN,
+        };
+        assert!(compute_signal_grids(&bad_sequencer_rate).is_err());
+        assert!(compute_grid([bad_sequencer_rate].iter()).is_err());
+    }
+
+    #[test]
     fn test_compute_grid_no_signals() {
-        let (signal_grid, sequencer_grid) = compute_grid::<MySignal>([].iter());
+        let (signal_grid, sequencer_grid) = compute_grid::<MySignal>([].iter()).unwrap();
         assert_eq!(signal_grid, tiny_samples(1));
         assert_eq!(sequencer_grid, tiny_samples(1));
     }
@@ -218,7 +234,7 @@ mod tests {
     #[test]
     fn test_compute_grid_single() {
         let signals = [MySignal::new(2.0e9, 16)];
-        let (signal_grid, sequencer_grid) = compute_grid(signals.iter());
+        let (signal_grid, sequencer_grid) = compute_grid(signals.iter()).unwrap();
         assert_eq!(signal_grid, tiny_samples(1800));
         assert_eq!(sequencer_grid, tiny_samples(28800));
     }
@@ -230,7 +246,7 @@ mod tests {
             MySignal::new(2.0e9, 16),
             MySignal::new(2.0e9, 16),
         ];
-        let (signal_grid, sequencer_grid) = compute_grid(signals.iter());
+        let (signal_grid, sequencer_grid) = compute_grid(signals.iter()).unwrap();
         // Same as single signal
         assert_eq!(signal_grid, tiny_samples(1800));
         assert_eq!(sequencer_grid, tiny_samples(28800));
@@ -252,7 +268,7 @@ mod tests {
                 device_traits::UHFQA_TRAITS.sample_multiple,
             ),
         ];
-        let (signal_grid, sequencer_grid) = compute_grid(signals.iter());
+        let (signal_grid, sequencer_grid) = compute_grid(signals.iter()).unwrap();
         // 2.4 GHz -> 1500, 2.0 GHz -> 1800, 1.8 GHz -> 2000
         // lcm(1500, 1800, 2000) = 18000
         assert_eq!(signal_grid, tiny_samples(18000));
@@ -265,7 +281,7 @@ mod tests {
             .take(signals.len() * 300)
             .cloned()
             .collect::<Vec<_>>();
-        let (signal_grid, sequencer_grid) = compute_grid(signals.iter());
+        let (signal_grid, sequencer_grid) = compute_grid(signals.iter()).unwrap();
         assert_eq!(signal_grid, tiny_samples(18000));
         assert_eq!(sequencer_grid, tiny_samples(144000));
     }
@@ -318,7 +334,7 @@ mod tests {
         ) in sampling_rate_expected_grids.iter().enumerate()
         {
             let signal = MySignal::new(sampling_rate.value(), *sample_multiple);
-            let (signal_grid, sequencer_grid) = compute_signal_grids(&signal);
+            let (signal_grid, sequencer_grid) = compute_signal_grids(&signal).unwrap();
             assert_eq!(
                 signal_grid, *expected_signal_grid,
                 "Failed for setup: {}",

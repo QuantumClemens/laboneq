@@ -8,7 +8,7 @@
 
 use codegenerator::pulse_map::PulseMap;
 use laboneq_py_utils::py_export::{complex_or_float_to_py, pulse_parameters_to_py_dict};
-use laboneq_py_utils::py_object_interner::PyObjectInterner;
+use laboneq_py_utils::py_object_store::PyObjectStore;
 use numpy::PyArray1;
 use pyo3::types::{PyDict, PyList};
 use pyo3::{IntoPyObjectExt, intern, prelude::*};
@@ -21,7 +21,7 @@ use laboneq_units::duration::{Duration, Second};
 use codegenerator::ir::compilation_job::ChannelIndex;
 use codegenerator::ir::compilation_job::DeviceUid;
 use codegenerator::ir::{Samples, compilation_job::AwgKind};
-use codegenerator::result::{AwgCodeGenerationResult, MarkerMode};
+use codegenerator::result::{AwgCodeGenerationResult, MarkerMode, SignalIntegrationInfo};
 use codegenerator::result::{ChannelOscillator, CodegenWaveform, SignalType};
 use codegenerator::result::{FixedValueOrParameter, ParameterPhaseIncrement};
 use codegenerator::result::{PpcSettings, RoutedOutput, SeqCGenOutput};
@@ -169,7 +169,7 @@ pub(crate) struct AwgCodeGenerationResultPy {
     #[pyo3(get)]
     command_table: Option<String>,
     #[pyo3(get)]
-    integration_lengths: HashMap<String, Py<SignalIntegrationInfoPy>>,
+    integration_lengths: Py<PyDict>,
     #[pyo3(get)]
     parameter_phase_increment_map: Option<HashMap<String, Vec<i64>>>,
     #[pyo3(get)]
@@ -255,23 +255,8 @@ impl AwgCodeGenerationResultPy {
         mut result: AwgCodeGenerationResult,
         id_store: &NamedIdStore,
     ) -> PyResult<Self> {
-        let integration_lengths = result
-            .integration_lengths
-            .into_iter()
-            .map(|(k, v)| {
-                (
-                    id_store.resolve_unchecked(k).to_string(),
-                    Py::new(
-                        py,
-                        SignalIntegrationInfoPy {
-                            is_play: v.is_play,
-                            length: v.length,
-                        },
-                    )
-                    .unwrap(),
-                )
-            })
-            .collect();
+        let integration_lengths =
+            integration_lengths_to_py(py, result.integration_lengths, id_store)?;
         let command_table = result
             .command_table
             .as_mut()
@@ -487,6 +472,23 @@ impl AwgCodeGenerationResultPy {
     }
 }
 
+fn integration_lengths_to_py(
+    py: Python,
+    integration_lengths: Vec<SignalIntegrationInfo>,
+    id_store: &NamedIdStore,
+) -> PyResult<Py<PyDict>> {
+    let dict = PyDict::new(py);
+    for info in integration_lengths {
+        let signal_str = id_store.resolve_unchecked(info.signal).to_string();
+        let info_py = SignalIntegrationInfoPy {
+            is_play: info.is_play,
+            length: info.length,
+        };
+        dict.set_item(signal_str, Py::new(py, info_py)?)?;
+    }
+    Ok(dict.into())
+}
+
 fn oscillator_to_py(
     py: Python,
     oscillator: &ChannelOscillator,
@@ -591,7 +593,7 @@ impl SeqCGenOutputPy {
         py: Python,
         mut results: SeqCGenOutput,
         id_store: &NamedIdStore,
-        py_object_store: &PyObjectInterner<ExternalParameterUid>,
+        py_object_store: &PyObjectStore<ExternalParameterUid>,
     ) -> PyResult<Self> {
         let result_handle_maps = results
             .awg_results
@@ -1017,7 +1019,7 @@ fn pulse_map_to_py<'py>(
     py: Python<'py>,
     pulse_map: PulseMap,
     id_store: &NamedIdStore,
-    py_object_store: &PyObjectInterner<ExternalParameterUid>,
+    py_object_store: &PyObjectStore<ExternalParameterUid>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let pulse_map_entry_cls = py
         .import(intern!(py, "laboneq.data.artifacts_qccs"))?

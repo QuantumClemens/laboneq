@@ -1,3 +1,64 @@
+# LabOne Q 26.10.0b1 (2026-08-13)
+
+## Features
+
+- DeviceSetup.add_connections() now lets a SignalConnection's entire ports spec be a single, already-defined logical signal (given as its uid/path string or a LogicalSignal object), resolving to the raw port(s) that signal is already connected to. This makes it easy to multiplex an additional signal onto an existing port without repeating its raw port ID by hand.
+- Improved `laboneq.simple` import time by changing some eager package imports to lazy ones.
+
+## Bug Fixes
+
+- Fixed a bug where an HDAWG sequence whose distinct waveforms exceed the FPGA waveform-start memory would silently produce misaligned output. LabOne Q now detects this and raises a resource-limitation error; when automatic chunking is enabled, the chunk count is increased to resolve it.
+- Fixed a bug where JSON serialization of `CompiledExperiment` failed when using `OutputRoute` with an undefined `phase_shift`.
+- Fixed a bug where two installed distributions providing the same backend would either register the backend twice or report a confusing missing-module warning. LabOne Q now fails to import, naming both distributions so you can uninstall the obsolete one.
+
+## Removals from the Codebase
+
+- Remove deprecated methods `CompiledExperiment.replace_pulse` and `CompiledExperiment.replace_phase_increment`. Instead, modify the experiment by putting the new pulse and/or phase increment in there and recompile the experiment. NOTE: the methods `RuntimeContext.replace_pulse` and `RuntimeContext.replace_phase_increment` are preserved and can still be used to apply replacements in NT callbacks (these methods leave the compiled experiment unchanged).
+- Remove deprecated properties `CompiledExperiment.src`, `CompiledExperiment.waves`, `CompiledExperiment.recipe`, `CompiledExperiment.wave_indices`, `CompiledExperiment.command_tables`, `CompiledExperiment.schedule`. We no longer support these as top-level properties of `CompiledExperiment`. As an end user, you are not supposed to depend on this; however, for debugging or learning purposes you can still access the same information through the artifacts in the compiled experiment.
+- Removed support for arbitrary Python objects as pulse parameter values and near-time callback arguments.
+
+  Such values were supported back when nothing serialized the experiment between compilation and execution by
+  the Controller: the compiler pickled them internally to carry them to the pulse sampler or near-time callback
+  that consumes them, and the pickled bytes never left the process. They were never compatible with
+  serialization, though: opaque Python types have always failed once a JSON serialization step was involved,
+  such as saving the experiment.
+
+  They are now rejected up front, when the experiment is compiled, with a `LabOneQException`. The set of
+  supported value types therefore no longer depends on whether the experiment gets serialized, and the compiler
+  no longer pickles anything.
+
+  The supported value types for `pulse_parameters` and for the arguments of `Experiment.call` are:
+
+  - `int`, `float`, `complex`, `str`, `bytes`, `bool`, `None`, `SweepParameter` or `LinearSweepParameter`
+  - lists of the above
+  - dictionaries of the above with `str` keys
+
+  The lists and dictionaries may be nested and need not have homogeneous value types. A sweep parameter,
+  however, must be the pulse parameter or callback argument value itself: nested inside a list or dictionary it
+  is not resolved, and reaches the pulse sampler or near-time callback as the sweep parameter object rather than
+  the value of the current sweep step.
+
+  Note that JSON-like data is already covered: nested lists and `str`-keyed dictionaries of the types above
+  can be passed as is. To pass a value of any other type, convert it to a supported one:
+
+  - NumPy arrays: pass `array.tolist()`, or `array.tobytes()` and rebuild the array with `numpy.frombuffer`,
+    which preserves the `dtype` exactly and stays compact for long arrays.
+  - Anything else (a `set`, a `datetime`, an instance of your own class, ...): serialize the value to `bytes`
+    yourself and deserialize it inside the pulse sampler or near-time callback that consumes it.
+
+  ```python
+  import numpy as np
+  from laboneq.simple import pulse_library
+
+  @pulse_library.register_pulse_functional
+  def my_pulse(x, **kwargs):
+      coefficients = np.frombuffer(kwargs["coefficients"], dtype=np.float64)  # bytes -> ndarray
+      return np.polyval(coefficients, x)
+
+  coefficients = np.array([0.1, -0.5, 1.0])
+  exp.play(signal="drive", pulse=my_pulse("p", coefficients=coefficients.tobytes()))
+  ```
+
 # LabOne Q 26.7.0 (2026-07-30)
 
 ## Bug Fixes
@@ -8,6 +69,7 @@
 
 ## Deprecation Notices
 
+- Deprecated support for Python object types not supported by JSON serializer in pulse parameter values and callback functions. Users requiring wider range of types can e.g. serialize the data into bytes and pass that instead.
 - Added runtime deprecation warnings for properties deprecated long ago: `CompiledExperiment.src`, `CompiledExperiment.waves`, `CompiledExperiment.recipe`, `CompiledExperiment.wave_indices`, `CompiledExperiment.command_tables`, `CompiledExperiment.schedule`.
 
 # LabOne Q 26.7.0b6 (2026-07-16)
@@ -247,6 +309,13 @@
 - Removed the `update_qubits` and `update_quantum_elements` methods, which were deprecated in LabOne Q 26.1. Please use the `update` method instead.
 - Removed the following methods from the `QPU` class: `copy_qubits` (deprecated in v2.52.0, please use `copy_quantum_elements` instead), `override_qubits` (deprecated in v2.52.0, please use `override_quantum_elements` instead), `qubit_by_uid` (deprecated in v2.52.0, please use `__getitem__` instead), `quantum_element_by_uid` (deprecated in v2.55.0, please use `__getitem__` instead). Removed the following attributes from the `QPU` class: `qubits` (deprecated in v2.52.0, please use `quantum_elements` instead), `_qubit_map` (deprecated in v2.52.0, please use `_quantum_element_map` instead).
 - Removed the deprecated DataStore class and associated SQLite-based data storage functionality.
+
+
+# LabOne Q 26.1.1 (2026-04-08)
+
+## Features
+
+- Relaxed the `zhinst-toolkit` dependency from `==1.2.0` to `>=1.2.0`, allowing compatibility with newer patch versions of LabOne.
 
 
 # LabOne Q 26.1.0 (2026-01-30)

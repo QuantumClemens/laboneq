@@ -489,6 +489,13 @@ pub(crate) fn handle_plays(
                         awg.device_kind().as_str()
                     );
                 }
+                interval_calculator::Error::IntervalOverlapsCutPoint(_) => {
+                    bail!(
+                        "Multiple overlapping & incompatible operations detected.\n\
+                        Check whether operations, such as acquisitions and pulse playbacks, on multiplexed channels are aligned so \
+                        operations either start and end at the same time, or do not overlap at all."
+                    );
+                }
                 _ => return Err(LabOneQError::from_err(e)),
             },
             Ok(out) => out,

@@ -1,13 +1,18 @@
 # Copyright 2022 Zurich Instruments AG
 # SPDX-License-Identifier: Apache-2.0
 
+# ruff: file-ignore[F401]
+
 """
 Convenience header for the LabOne Q project.
 """
 
 from laboneq import laboneq_logging, workflow
 from laboneq.controller.api.async_remote_controller import AsyncRemoteController
-from laboneq.controller.api.remote_controller import RemoteController
+from laboneq.controller.api.remote_controller import (
+    RemoteController,
+    get_instrument_topology,
+)
 from laboneq.controller.runtime_context import RuntimeContext
 from laboneq.core.types.compiled_experiment import CompiledExperiment
 from laboneq.core.utilities.compile_experiment import (
@@ -31,6 +36,15 @@ from laboneq.dsl.calibration import (
     SignalCalibration,
     units,
 )
+from laboneq.dsl.coprocessor.builtins import (
+    is_live,
+    mark_stale,
+    register_stream,
+    render_layout,
+    send,
+)
+from laboneq.dsl.coprocessor.coprocessor import Coprocessor
+from laboneq.dsl.coprocessor.struct import Struct
 from laboneq.dsl.device import DeviceSetup, create_connection
 from laboneq.dsl.device.device_setup_helper import DeviceSetupHelper
 from laboneq.dsl.device.instruments import (
@@ -65,6 +79,7 @@ from laboneq.dsl.experiment import (
     pulse_library,
 )
 from laboneq.dsl.experiment import builtins_dsl as dsl
+from laboneq.dsl.experiment.do_until import do_until
 from laboneq.dsl.quantum import (
     QPU,
     QPUTopology,
@@ -77,8 +92,27 @@ from laboneq.dsl.quantum import (
     TransmonParameters,
 )
 from laboneq.dsl.result import Results
+from laboneq.dsl.result.logged_variable import LoggedVariable
 from laboneq.dsl.session import Session
 from laboneq.dsl.utils import has_onboard_lo
+from laboneq.dsl.variable import Variable
+from laboneq.dsl.variable.types import (
+    Amplitude,
+    DiscriminationDataPacked,
+    Frequency,
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    IqDataPacked,
+    Phase,
+    ScopeShot,
+    Uint8,
+    Uint16,
+    Uint32,
+    Uint64,
+    WaveformUpdate,
+)
 from laboneq.openqasm3 import ExternResult, GateStore, exp_from_qasm, exp_from_qasm_list
 from laboneq.pulse_sheet_viewer.pulse_sheet_viewer import show_pulse_sheet
 from laboneq.serializers import from_dict, from_json, load, save, to_dict, to_json

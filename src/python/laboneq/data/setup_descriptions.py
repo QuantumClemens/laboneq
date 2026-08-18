@@ -5,7 +5,7 @@
 
 A ``DeviceSetup`` may carry a ``SetupDescription`` that is opaque to the
 public API but consumed by the compiler. The base class is abstract.
-``SetupDescriptionZQCS`` lives in ``laboneq_zqcs`` and is only known
+``SetupDescriptionZQCS`` lives in ``zhinst_zqcs`` and is only known
 once that backend has been imported. QCCS has no payload of its own.
 """
 
@@ -35,7 +35,7 @@ def get_setup_description_class(name: str) -> type["SetupDescription"]:
 
     Raises:
         KeyError: if no subclass with that name has been registered. For
-            ZQCS this typically means the `laboneq_zqcs` backend was not
+            ZQCS this typically means the `zhinst_zqcs` backend was not
             imported.
     """
     try:
@@ -43,7 +43,7 @@ def get_setup_description_class(name: str) -> type["SetupDescription"]:
     except KeyError as e:
         raise KeyError(
             f"No SetupDescription subclass named {name!r} is registered. "
-            "If this is a ZQCS payload, ensure `laboneq_zqcs` is installed "
+            "If this is a ZQCS payload, ensure `zhinst_zqcs` is installed "
             "and imported."
         ) from e
 

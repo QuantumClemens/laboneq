@@ -7,9 +7,7 @@ use codegenerator::ir::experiment::PulseParametersId;
 use codegenerator_utils::pulse_parameters::PulseParameters;
 use laboneq_common::named_id::NamedIdStore;
 use laboneq_dsl::types::ExternalParameterUid;
-use laboneq_py_utils::{
-    py_export::pulse_parameters_to_py_dict, py_object_interner::PyObjectInterner,
-};
+use laboneq_py_utils::{py_export::pulse_parameters_to_py_dict, py_object_store::PyObjectStore};
 use pyo3::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -51,7 +49,7 @@ pub(crate) fn pulse_parameters_to_py(
     py: Python,
     parameters: &PulseParameters,
     id_store: &NamedIdStore,
-    py_object_store: &PyObjectInterner<ExternalParameterUid>,
+    py_object_store: &PyObjectStore<ExternalParameterUid>,
 ) -> PulseParametersPy {
     let pulse_parameters =
         pulse_parameters_to_py_dict(py, &parameters.pulse_parameters, id_store, py_object_store)

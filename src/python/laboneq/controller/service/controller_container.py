@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from laboneq.controller.api.controller_api import SubmissionStatus
+    from laboneq.data.instrument_topology import InstrumentTopology
     from laboneq.data.scheduled_experiment import ScheduledExperiment
     from laboneq.dsl.device import DeviceSetup
     from laboneq.dsl.result.results import Results
@@ -159,6 +160,19 @@ def _auto_create_device_setup(dataserver: tuple[str, str]) -> DeviceSetup:
     return setup
 
 
+def _build_device_setup_from_topology(
+    instrument_topology: InstrumentTopology,
+) -> DeviceSetup:
+    """Build a :class:`DeviceSetup` from an :class:`InstrumentTopology`.
+
+    Lets ``--instrumenttopology`` (or its equivalent ``create()`` argument)
+    stand in for an explicit ``device_setup``, including in emulation mode.
+    """
+    from laboneq.dsl.device import DeviceSetup
+
+    return DeviceSetup.from_instrument_topology(instrument_topology)
+
+
 # ---------------------------------------------------------------------------
 # ControllerContainer
 # ---------------------------------------------------------------------------
@@ -200,6 +214,7 @@ class ControllerContainer:
         dataserver: tuple[str, str] | None = None,
         do_emulation: bool = False,
         reset_devices: bool = False,
+        instrument_topology: InstrumentTopology | None = None,
     ) -> ControllerContainer:
         """Connect to hardware and return a ready-to-use container.
 
@@ -212,7 +227,11 @@ class ControllerContainer:
           from the SCM on connect.
         - ``device_setup`` + ``dataserver`` — Gen 2 override: replace the
           dataserver entries on the setup with *dataserver*.
-        - ``do_emulation`` requires an explicit ``device_setup``.
+        - ``instrument_topology`` alone (no ``device_setup``) — build the
+          ``device_setup`` from the topology.
+        - ``do_emulation`` requires an explicit ``device_setup`` or
+          ``instrument_topology`` (falls back to ``device_setup`` if both are
+          given).
 
         Args:
             neartime_callbacks: Pre-registered near-time callbacks.
@@ -220,21 +239,28 @@ class ControllerContainer:
             dataserver: ``(host, port)`` of the hardware server.
             do_emulation: Run in emulation mode (no real hardware).
             reset_devices: Reset hardware on connect.
+            instrument_topology: Instrument topology to build ``device_setup``
+                from when *device_setup* is not given.
 
         Raises:
             ValueError: Invalid combination of *device_setup*, *dataserver*,
                 and *do_emulation*.
             Exception: Any failure from the controller factory propagates.
         """
-        if do_emulation and device_setup is None:
+        if do_emulation and device_setup is None and instrument_topology is None:
             raise ValueError(
-                "do_emulation requires an explicit device_setup "
+                "do_emulation requires an explicit device_setup or instrument_topology "
                 "(the system description cannot be auto-discovered without hardware)."
             )
         if device_setup is None:
-            if dataserver is None:
-                raise ValueError("Provide either device_setup or dataserver.")
-            device_setup = _auto_create_device_setup(dataserver)
+            if instrument_topology is not None:
+                device_setup = _build_device_setup_from_topology(instrument_topology)
+            elif dataserver is not None:
+                device_setup = _auto_create_device_setup(dataserver)
+            else:
+                raise ValueError(
+                    "Provide either device_setup, instrument_topology, or dataserver."
+                )
         else:
             # Gen 2 setups reference a LabOne dataserver by UID; when the
             # caller supplies one, override the stored addresses with it.
@@ -248,6 +274,7 @@ class ControllerContainer:
             reset_devices=reset_devices,
             disable_runtime_checks=True,
             timeout=None,
+            instrument_topology=instrument_topology,
         )
         logger.info(
             "Connected to hardware (emulation=%s, reset_devices=%s)",
@@ -273,6 +300,7 @@ class ControllerContainer:
         reset_devices: bool,
         disable_runtime_checks: bool,
         timeout: float | None,
+        instrument_topology: InstrumentTopology | None = None,
     ) -> AsyncLocalController:
         """Default factory: convert the device setup and connect to hardware."""
         return await AsyncLocalController.create(
@@ -283,6 +311,7 @@ class ControllerContainer:
             reset_devices=reset_devices,
             disable_runtime_checks=disable_runtime_checks,
             timeout_s=timeout,
+            instrument_topology=instrument_topology,
         )
 
     # ------------------------------------------------------------------
@@ -293,6 +322,11 @@ class ControllerContainer:
     def device_setup(self) -> DeviceSetup:
         """Return the server's device setup."""
         return self._device_setup
+
+    @property
+    def instrument_topology(self) -> InstrumentTopology | None:
+        """Return the server's instrument topology, or None if not configured."""
+        return self._controller.instrument_topology
 
     @property
     def registered_callback_names(self) -> list[str]:

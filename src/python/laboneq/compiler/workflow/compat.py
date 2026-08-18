@@ -57,6 +57,9 @@ class _CapnpBuilder:
             uid=src.uid,
             sections=src.sections,
             experiment_signals=experiment_signals,
+            coprocessors=list(src.coprocessors.values()),
+            coprocessor_mappings=list(src.coprocessor_mappings.items()),
+            streams=list(src.streams),
         )
 
     def build_device_setup(self) -> compiler_rs.DeviceSetup:

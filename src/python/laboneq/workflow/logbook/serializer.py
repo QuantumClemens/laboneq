@@ -10,42 +10,61 @@ See the functions below named `serialize_` for the list of types that can be ser
 from __future__ import annotations
 
 import abc
+import sys
 import warnings
 from functools import singledispatch, singledispatchmethod
 from typing import TYPE_CHECKING
 
-import matplotlib.figure as mpl_figure
 import numpy as np
 import orjson
-import PIL
-
-try:
-    from lmfit.model import ModelResult as LmfitModelResult
-
-    LMFIT_IMPORTED = True
-except ImportError:
-    LMFIT_IMPORTED = False
-
-
-try:
-    from uncertainties.core import Variable as UncertaintiesVariable
-    from uncertainties.core import AffineScalarFunc as UncertaintiesAffineScalarFunc
-
-    UNCERTAINTIES_IMPORTED = True
-except ImportError:
-    UNCERTAINTIES_IMPORTED = False
-
-
-try:
-    from sklearn.base import BaseEstimator as SklearnBaseEstimator
-
-    SKLEARN_IMPORTED = True
-except ImportError:
-    SKLEARN_IMPORTED = False
-
 
 if TYPE_CHECKING:
-    from typing import IO
+    from typing import IO, Any, Callable
+
+    import matplotlib.figure as mpl_figure
+    import PIL
+    from lmfit.model import ModelResult as LmfitModelResult
+    from sklearn.base import BaseEstimator as SklearnBaseEstimator
+    from uncertainties.core import AffineScalarFunc as UncertaintiesAffineScalarFunc
+    from uncertainties.core import Variable as UncertaintiesVariable
+
+
+_OPTIONAL_REGISTRARS: dict[str, Callable[[], None]] = {}
+
+
+def _optional_dependency(
+    module: str,
+) -> Callable[[Callable[[], None]], Callable[[], None]]:
+    """Declare a registrar that installs the handlers for types defined in `module`.
+
+    Importing lmfit, matplotlib & co. eagerly dominates the cost of `import laboneq`,
+    so their handlers are installed on first use instead. An object of one of these
+    types cannot exist unless its defining module is already imported, by which point
+    importing it here is free.
+    """
+
+    def declare(registrar: Callable[[], None]) -> Callable[[], None]:
+        _OPTIONAL_REGISTRARS[module] = registrar
+        return registrar
+
+    return declare
+
+
+def _install_optional_handlers() -> bool:
+    """Install the handlers of optional dependencies imported since the last call.
+
+    Returns true if any new handlers were installed.
+    """
+    if not _OPTIONAL_REGISTRARS:
+        return False
+    installed = False
+    for mod in [mod for mod in _OPTIONAL_REGISTRARS if mod in sys.modules]:
+        # pop() is the claim: a concurrent caller either gets the registrar or None.
+        registrar = _OPTIONAL_REGISTRARS.pop(mod, None)
+        if registrar is not None:
+            registrar()
+            installed = True
+    return installed
 
 
 class SerializationNotSupportedError(RuntimeError):
@@ -111,8 +130,9 @@ class OrjsonSerializer:
     It applies consistent settings when calling `orjson.dumps`.
     """
 
-    # Types supported by orjson or by provided default handler:
-    SUPPORTED_TYPES = (
+    # Types supported by orjson or by provided default handler. Types from optional
+    # dependencies are appended by their registrar, see `_optional_dependency`.
+    SUPPORTED_TYPES: tuple[type, ...] = (
         type(None),
         int,
         float,
@@ -126,24 +146,29 @@ class OrjsonSerializer:
         np.ndarray,
     )
 
-    if LMFIT_IMPORTED:
-        SUPPORTED_TYPES += (LmfitModelResult,)
-
-    if UNCERTAINTIES_IMPORTED:
-        SUPPORTED_TYPES += (UncertaintiesVariable, UncertaintiesAffineScalarFunc)
-
-    if SKLEARN_IMPORTED:
-        SUPPORTED_TYPES += (SklearnBaseEstimator,)
-
     COMPLEX_DTYPE_MAP = {
         # complex-dtype: float-view-dtype
         np.dtype(np.complex128): np.dtype(np.float64),
         np.dtype(np.complex64): np.dtype(np.float32),
     }
 
+    @classmethod
+    def register_default(
+        cls,
+        type_: type,
+        handler: Callable[[OrjsonSerializer, Any], object],
+    ) -> None:
+        """Register a `default` handler for `type_` and mark the type as supported."""
+        cls.default.register(type_, handler)  # type: ignore[attr-defined]
+        cls.SUPPORTED_TYPES += (type_,)
+
     def supported_type(self, obj) -> bool:
         """Return true if the *type* of the object is supported."""
-        return isinstance(obj, self.SUPPORTED_TYPES)
+        # Called per leaf object, so probe for new handlers only on a miss: installing
+        # them can only widen `SUPPORTED_TYPES`, never turn a hit into a miss.
+        return isinstance(obj, self.SUPPORTED_TYPES) or (
+            _install_optional_handlers() and isinstance(obj, self.SUPPORTED_TYPES)
+        )
 
     def supported_object(self, obj) -> bool:
         """Return true if the whole object is supported."""
@@ -161,6 +186,8 @@ class OrjsonSerializer:
     @singledispatchmethod
     def default(self, obj) -> object:
         """A `default` handler for objects `orjson` does not support directly."""
+        if _install_optional_handlers():
+            return self.default(obj)
         raise TypeError(
             f"{type(obj).__name__!r} is not supported by the logbook JSON serializer."
         )
@@ -188,50 +215,40 @@ class OrjsonSerializer:
         """A `default` orjson handler for lists."""
         return {"real": obj.real, "imag": obj.imag}
 
-    if LMFIT_IMPORTED:
+    def _default_lmfit_model_result(self, obj: LmfitModelResult) -> object:
+        """A `default` orjson handler for LmfitModelResults."""
+        return obj.summary()
 
-        @default.register
-        def _default_lmfit_model_result(self, obj: LmfitModelResult) -> object:
-            """A `default` orjson handler for LmfitModelResults."""
-            return obj.summary()
+    def _default_uncertainties_variable(self, obj: UncertaintiesVariable) -> object:
+        """A `default` orjson handler for UncertaintiesVariable."""
+        return {
+            "value": obj.nominal_value,
+            "std_dev": obj.std_dev,
+            "tag": obj.tag,
+        }
 
-    if UNCERTAINTIES_IMPORTED:
+    def _default_uncertainties_affine_scalar_func(
+        self, obj: UncertaintiesAffineScalarFunc
+    ) -> object:
+        """A `default` orjson handler for UncertaintiesAffineScalarFunc."""
+        # In uncertainties 3.2.4+, accessing std_dev triggers FutureWarnings about
+        # deprecated internal methods (error_components() and derivatives()).
+        # TODO: Remove workaround after migration to v4 when available.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=FutureWarning,
+                module="uncertainties",
+            )
+            std_dev = obj.std_dev
+        return {
+            "value": obj.nominal_value,
+            "std_dev": std_dev,
+        }
 
-        @default.register
-        def _default_uncertainties_variable(self, obj: UncertaintiesVariable) -> object:
-            """A `default` orjson handler for UncertaintiesVariable."""
-            return {
-                "value": obj.nominal_value,
-                "std_dev": obj.std_dev,
-                "tag": obj.tag,
-            }
-
-        @default.register
-        def _default_uncertainties_affine_scalar_func(
-            self, obj: UncertaintiesAffineScalarFunc
-        ) -> object:
-            """A `default` orjson handler for UncertaintiesAffineScalarFunc."""
-            # In uncertainties 3.2.4+, accessing std_dev triggers FutureWarnings about
-            # deprecated internal methods (error_components() and derivatives()).
-            # TODO: Remove workaround after migration to v4 when available.
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    category=FutureWarning,
-                    module="uncertainties",
-                )
-                std_dev = obj.std_dev
-            return {
-                "value": obj.nominal_value,
-                "std_dev": std_dev,
-            }
-
-    if SKLEARN_IMPORTED:
-
-        @default.register
-        def _default_sklearn_base_estimator(self, obj: SklearnBaseEstimator) -> object:
-            """A `default` orjson handler for SklearnBaseEstimator."""
-            return {k: v for k, v in obj.__dict__.items() if k.endswith("_")}
+    def _default_sklearn_base_estimator(self, obj: SklearnBaseEstimator) -> object:
+        """A `default` orjson handler for SklearnBaseEstimator."""
+        return {k: v for k, v in obj.__dict__.items() if k.endswith("_")}
 
     def dumps(self, obj) -> bytes:
         """Call orjson.dumps with the appropriate settings.
@@ -271,6 +288,8 @@ def serialize(obj: object, opener: SerializeOpener) -> None:
             A `SerializeOpener` for retrieving options and opening
             files to write objects to.
     """
+    if _install_optional_handlers():
+        return serialize(obj, opener)
     raise SerializationNotSupportedError(
         f"Type {type(obj)!r} not supported by the serializer [name: {opener.name()}]."
     )
@@ -300,7 +319,6 @@ def serialize_bytes(obj: bytes, opener: SerializeOpener) -> None:
         f.write(obj)
 
 
-@serialize.register
 def serialize_pil_image(obj: PIL.Image.Image, opener: SerializeOpener) -> None:
     """Serialize a PIL image.
 
@@ -324,7 +342,6 @@ def serialize_pil_image(obj: PIL.Image.Image, opener: SerializeOpener) -> None:
         obj.save(f, format=image_format, **options)
 
 
-@serialize.register
 def serialize_matplotlib_figure(
     obj: mpl_figure.Figure,
     opener: SerializeOpener,
@@ -362,58 +379,101 @@ def serialize_numpy_array(obj: np.ndarray, opener: SerializeOpener) -> None:
         np.save(f, obj, allow_pickle=False, **opener.options())
 
 
-if LMFIT_IMPORTED:
+def serialize_lmfit_model_result(
+    obj: LmfitModelResult, opener: SerializeOpener
+) -> None:
+    """Serialize an lmfit `ModelResult`.
 
-    @serialize.register
-    def serialize_lmfit_model_result(
-        obj: LmfitModelResult, opener: SerializeOpener
-    ) -> None:
-        """Serialize an lmfit `ModelResult`.
-
-        `ModelResult`s are saved as JSON using their `.summary` method.
-        """
-        _ORJSON_SERIALIZER.serialize(obj, opener)
+    `ModelResult`s are saved as JSON using their `.summary` method.
+    """
+    _ORJSON_SERIALIZER.serialize(obj, opener)
 
 
-if SKLEARN_IMPORTED:
+def serialize_scikit_learn_base_estimator(
+    obj: SklearnBaseEstimator, opener: SerializeOpener
+) -> None:
+    """Serialize scikit-learn estimators.
 
-    @serialize.register
-    def serialize_scikit_learn_base_estimator(
-        obj: SklearnBaseEstimator, opener: SerializeOpener
-    ) -> None:
-        """Serialize scikit-learn estimators.
-
-        Estimators parameter values are saved as JSON.
-        """
-        _ORJSON_SERIALIZER.serialize(obj, opener)
+    Estimators parameter values are saved as JSON.
+    """
+    _ORJSON_SERIALIZER.serialize(obj, opener)
 
 
-if UNCERTAINTIES_IMPORTED:
+def serialize_uncertainties_variable(
+    obj: UncertaintiesVariable,
+    opener: SerializeOpener,
+) -> None:
+    """Serialize uncertainties `Variable`.
 
-    @serialize.register
-    def serialize_uncertainties_variable(
-        obj: UncertaintiesVariable,
-        opener: SerializeOpener,
-    ) -> None:
-        """Serialize uncertainties `Variable`.
+    The `Variable` has its `value`, `std_dev` and `tag` saved as JSON.
+    """
+    _ORJSON_SERIALIZER.serialize(obj, opener)
 
-        The `Variable` has its `value`, `std_dev` and `tag` saved as JSON.
-        """
-        _ORJSON_SERIALIZER.serialize(obj, opener)
 
-    @serialize.register
-    def serialize_uncertainties_affince_scalar_func(
-        obj: UncertaintiesAffineScalarFunc,
-        opener: SerializeOpener,
-    ) -> None:
-        """Serialize uncertainties `AffineScalarFunc`.
+def serialize_uncertainties_affince_scalar_func(
+    obj: UncertaintiesAffineScalarFunc,
+    opener: SerializeOpener,
+) -> None:
+    """Serialize uncertainties `AffineScalarFunc`.
 
-        `AfficeScalarFunc` objects are created when performing arithmetic on
-        uncertainties `Variable` objects.
+    `AfficeScalarFunc` objects are created when performing arithmetic on
+    uncertainties `Variable` objects.
 
-        The `AffineScalarFunc` has its `value`, `std_dev` and `tag` saved as JSON.
-        """
-        _ORJSON_SERIALIZER.serialize(obj, opener)
+    The `AffineScalarFunc` has its `value`, `std_dev` and `tag` saved as JSON.
+    """
+    _ORJSON_SERIALIZER.serialize(obj, opener)
+
+
+# The registrars below are run on first use, in declaration order. Types they add to
+# `OrjsonSerializer.SUPPORTED_TYPES` appear in that order in error messages.
+
+
+@_optional_dependency("lmfit.model")
+def _register_lmfit() -> None:
+    from lmfit.model import ModelResult
+
+    serialize.register(ModelResult, serialize_lmfit_model_result)
+    OrjsonSerializer.register_default(
+        ModelResult, OrjsonSerializer._default_lmfit_model_result
+    )
+
+
+@_optional_dependency("uncertainties.core")
+def _register_uncertainties() -> None:
+    from uncertainties.core import AffineScalarFunc, Variable
+
+    serialize.register(Variable, serialize_uncertainties_variable)
+    serialize.register(AffineScalarFunc, serialize_uncertainties_affince_scalar_func)
+    OrjsonSerializer.register_default(
+        Variable, OrjsonSerializer._default_uncertainties_variable
+    )
+    OrjsonSerializer.register_default(
+        AffineScalarFunc, OrjsonSerializer._default_uncertainties_affine_scalar_func
+    )
+
+
+@_optional_dependency("sklearn.base")
+def _register_sklearn() -> None:
+    from sklearn.base import BaseEstimator
+
+    serialize.register(BaseEstimator, serialize_scikit_learn_base_estimator)
+    OrjsonSerializer.register_default(
+        BaseEstimator, OrjsonSerializer._default_sklearn_base_estimator
+    )
+
+
+@_optional_dependency("matplotlib.figure")
+def _register_matplotlib() -> None:
+    from matplotlib.figure import Figure
+
+    serialize.register(Figure, serialize_matplotlib_figure)
+
+
+@_optional_dependency("PIL.Image")
+def _register_pil() -> None:
+    from PIL.Image import Image
+
+    serialize.register(Image, serialize_pil_image)
 
 
 from laboneq.dsl.experiment.experiment import Experiment

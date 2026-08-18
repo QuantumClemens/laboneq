@@ -10,9 +10,14 @@ import attrs
 
 from laboneq.core import path as qct_path
 from laboneq.core.utilities.dsl_dataclass_decorator import classformatter
+from laboneq.dsl.device.io_units.logical_signal import (
+    LogicalSignal,
+    resolve_logical_signal_ref,
+)
 from laboneq.dsl.enums import IODirection
 
 if TYPE_CHECKING:
+    from laboneq.dsl.device.io_units.logical_signal import LogicalSignalRef
     from laboneq.dsl.enums import IOSignalType
 
 
@@ -37,6 +42,10 @@ class SignalConnection:
         type: Type of the signal
             Options: iq, rf, acquire
         ports: List of target instrument ports the signal is connected to.
+            A single already-defined logical signal (as its uid/path string
+            or a `LogicalSignal` object) may be given instead of a list of
+            raw ports; it then resolves to the raw port(s) already backing
+            that signal.
     """
 
     uid: str
@@ -89,12 +98,15 @@ class InternalConnection:
 
 
 def create_connection(
-    ports: Iterable[str] | str | None = None, **kwargs
+    ports: Iterable[str] | str | LogicalSignalRef | None = None, **kwargs
 ) -> SignalConnection | InternalConnection:
     """Create a connection.
 
     Args:
-        ports: Ports of the target instrument.
+        ports: Ports of the target instrument. A single already-defined
+            logical signal (as its uid/path string or a `LogicalSignal`
+            object) may be given instead, in which case the connection
+            resolves to the raw port(s) already backing that signal.
 
     Keyword Args:
         Only one of the following can exist:
@@ -122,6 +134,12 @@ def create_connection(
         )
     if "to_instrument" in kwargs:
         to = kwargs["to_instrument"]
+        if isinstance(ports, LogicalSignal):
+            raise ValueError(
+                "A LogicalSignal reference for 'ports' is only supported "
+                "when connecting to a signal ('to_signal'), not to an "
+                "instrument ('to_instrument')."
+            )
         return InternalConnection(to, from_port=ports)
     if "to_signal" in kwargs:
         to = kwargs["to_signal"]
@@ -129,6 +147,14 @@ def create_connection(
             ports = []
         elif isinstance(ports, str):
             ports = [ports]
+        elif isinstance(ports, LogicalSignal):
+            ports = [resolve_logical_signal_ref(ports)]
+        elif isinstance(ports, Iterable):
+            for p in ports:
+                if isinstance(p, LogicalSignal):
+                    raise ValueError(
+                        "Only a single LogicalSignal is allowed for 'ports'."
+                    )
         if "signal_type" in kwargs:
             warnings.warn(
                 "Argument 'signal_type' of 'create_connection' has been renamed to 'type'.",

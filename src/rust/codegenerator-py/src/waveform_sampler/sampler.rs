@@ -9,7 +9,7 @@ use laboneq_common::named_id::NamedIdStore;
 use laboneq_dsl::types::{ComplexOrFloat, ExternalParameterUid, PulseDef, PulseUid};
 use laboneq_error::{LabOneQError, PyErrorWithContext, WithContext, bail};
 use laboneq_py_utils::py_export::pulse_def_to_py;
-use laboneq_py_utils::py_object_interner::PyObjectInterner;
+use laboneq_py_utils::py_object_store::PyObjectStore;
 use num_complex::Complex64;
 use numpy::{PyArray1, PyArrayMethods, PyReadonlyArray1};
 use pyo3::exceptions::PyTypeError;
@@ -85,7 +85,7 @@ pub(crate) struct WaveformSamplerPy<'a> {
     pulse_parameters: HashMap<PulseParametersId, Py<PulseParametersPy>>,
     pulse_defs: HashMap<String, Py<PyAny>>,
     id_store: &'a NamedIdStore,
-    py_object_store: &'a PyObjectInterner<ExternalParameterUid>,
+    py_object_store: &'a PyObjectStore<ExternalParameterUid>,
     deduplicator: &'a PulseParameterDeduplicator,
 }
 
@@ -104,7 +104,7 @@ impl WaveformSamplerPy<'_> {
         pulse_defs: &[PulseDef],
         acquisition_type: AcquisitionType,
         dedup: &'a PulseParameterDeduplicator,
-        py_object_store: &'a PyObjectInterner<ExternalParameterUid>,
+        py_object_store: &'a PyObjectStore<ExternalParameterUid>,
         id_store: &'a NamedIdStore,
     ) -> WaveformSamplerPy<'a> {
         let pulse_defs = pulse_defs

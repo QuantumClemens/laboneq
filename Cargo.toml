@@ -1,5 +1,5 @@
 [workspace.package]
-version = "26.7.0"
+version = "26.10.0-b1"
 authors = ["Zurich Instruments AG <info@zhinst.com>"]
 edition = "2024"
 publish = false
@@ -19,6 +19,7 @@ resolver = "2"
 # 3rd party crates
 anyhow = "1.0"
 approx = { version = "0.5.1", features = ["num-complex"] }
+bitflags = "2"
 bitvec = "1.0"
 clap = "4.5.38"
 criterion = "0.8"
@@ -53,9 +54,13 @@ tempfile = "3"
 sha1 = "0.11.0"
 smallvec = "1.15.1"
 string-interner = "0.20.0"
-capnp = "0.26"
+capnp = "0.27"
 thiserror = "2.0"
 uuid = { version = "1", default-features = false, features = ["serde"] }
+twox-hash = { version = "2.1.2", default-features = false, features = [
+  "xxhash3_128",
+  "alloc",
+] }
 opentelemetry = { version = "0.32.0", default-features = false }
 opentelemetry_sdk = { version = "0.32.0", default-features = false }
 opentelemetry-otlp = { version = "0.32.0", default-features = false }
@@ -81,6 +86,7 @@ laboneq-units = { path = "src/rust/laboneq-units" }
 laboneq-py-utils = { path = "src/rust/laboneq-py-utils" }
 laboneq-opentelemetry-python = { path = "src/rust/laboneq-opentelemetry-python" }
 laboneq-qccs-backend = { path = "src/rust/laboneq-qccs-backend" }
+laboneq-qccs-capnp = { path = "src/rust/laboneq-qccs-capnp" }
 laboneq-tracing = { path = "src/rust/laboneq-tracing" }
 
 [workspace.lints.rust]

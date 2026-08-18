@@ -6,12 +6,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from zhinst.toolkit import Session as TKSession
-
 from laboneq.controller.devices.device_zi import DeviceBase
 
 if TYPE_CHECKING:
     import zhinst.core
+    from zhinst.toolkit import Session as TKSession
     from zhinst.toolkit.driver.devices import DeviceType
 
     from laboneq.controller.devices.device_zi import DeviceZI
@@ -41,6 +40,10 @@ class ToolkitDevices(Mapping):
         """Toolkit session from the initialized DAQ session."""
         tk_session = self._tk_sessions.get((host, port))
         if tk_session is None:
+            # Imported lazily: zhinst.toolkit is a large import and is only needed
+            # once a user actually reaches for a toolkit device.
+            from zhinst.toolkit import Session as TKSession
+
             tk_session = TKSession(server_host=host, server_port=port, connection=daq)
             self._tk_sessions[(host, port)] = tk_session
         return tk_session

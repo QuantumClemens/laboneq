@@ -14,6 +14,10 @@ from laboneq.serializers.base import VersionedClassSerializer
 from laboneq.serializers.implementations._models._calibration import (
     remove_high_pass_clearing,
 )
+from laboneq.serializers.implementations._models._coprocessor import (
+    CoprocessorModel,
+    StreamModel,
+)
 from laboneq.serializers.implementations._models._experiment import (
     AllSectionModel,
     ExperimentSignalModel,
@@ -36,17 +40,39 @@ _converter = make_converter()
 @serializer(types=Experiment, public=True)
 class ExperimentSerializer(VersionedClassSerializer[Experiment]):
     SERIALIZER_ID = "laboneq.serializers.implementations.ExperimentSerializer"
-    VERSION = 5
+    VERSION = 6
 
     @classmethod
     def to_dict(
         cls, obj: Experiment, options: SerializationOptions | None = None
     ) -> JsonSerializableType:
+        from laboneq.dsl.coprocessor.inventory import CoprocessorInventoryEntry
+
+        # Coprocessor state is serialized before the streams, and the streams
+        # before the sections, so that the identity caches are populated when a
+        # _Send / _MarkStale / DoUntilSection node resolves its $ref. Variables
+        # and Pulses are cached transitively via the stream field accessors.
         with create_caches():
+            coprocessors_d = {
+                label: _converter.unstructure(cp, CoprocessorModel)
+                for label, cp in obj.coprocessors.items()
+            }
+            streams_d = [
+                _converter.unstructure(stream, StreamModel) for stream in obj.streams
+            ]
+            mappings_d = {
+                label: (
+                    target.key
+                    if isinstance(target, CoprocessorInventoryEntry)
+                    else target
+                )
+                for label, target in obj.coprocessor_mappings.items()
+            }
             sections = [
                 _converter.unstructure(section, AllSectionModel)
                 for section in obj.sections
             ]
+
         return {
             "__serializer__": cls.serializer_id(),
             "__version__": cls.version(),
@@ -60,8 +86,58 @@ class ExperimentSerializer(VersionedClassSerializer[Experiment]):
                 "version": _converter.unstructure(obj.version),
                 "epsilon": obj.epsilon,
                 "sections": sections,
+                "coprocessors": coprocessors_d,
+                "coprocessor_mappings": mappings_d,
+                "streams": streams_d,
             },
         }
+
+    @classmethod
+    def from_dict_v6(
+        cls,
+        serialized_data: JsonSerializableType,
+        options: DeserializationOptions | None = None,
+    ) -> Experiment:
+        data = serialized_data["__data__"]
+
+        # Reconstruct coprocessors, then streams (which materialize and cache the
+        # Variables and Pulses bound to their field accessors), then sections —
+        # the same order as serialization, so every $ref resolves from cache.
+        with create_caches():
+            coprocessors = {
+                label: _converter.structure(cp_d, CoprocessorModel)
+                for label, cp_d in data.get("coprocessors", {}).items()
+            }
+            streams = [
+                _converter.structure(sd, StreamModel) for sd in data.get("streams", [])
+            ]
+            coprocessor_mappings = {
+                label: (
+                    _converter.structure(target, CoprocessorModel)
+                    if isinstance(target, dict)
+                    else target
+                )
+                for label, target in data.get("coprocessor_mappings", {}).items()
+            }
+            sections = [
+                _converter.structure(section, AllSectionModel)
+                for section in data["sections"]
+            ]
+
+        return Experiment(
+            uid=data["uid"],
+            name=data["name"],
+            signals={
+                k: _converter.structure(v, ExperimentSignalModel)
+                for k, v in data["signals"].items()
+            },
+            version=_converter.structure(data["version"], DSLVersion),
+            epsilon=data["epsilon"],
+            sections=sections,
+            coprocessors=coprocessors,
+            coprocessor_mappings=coprocessor_mappings,
+            streams=streams,
+        )
 
     @classmethod
     def from_dict_v5(
@@ -85,6 +161,7 @@ class ExperimentSerializer(VersionedClassSerializer[Experiment]):
             version=_converter.structure(serialized_data["version"], DSLVersion),
             epsilon=serialized_data["epsilon"],
             sections=sections,
+            # HQCS fields default to empty when loading pre-v6 payloads.
         )
 
     @classmethod

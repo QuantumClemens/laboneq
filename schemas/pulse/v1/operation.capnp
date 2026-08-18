@@ -4,6 +4,7 @@
 @0xad248f6ba75b927b;
 
 using Common = import "common.capnp";
+using Coprocessor = import "coprocessor.capnp";
 
 # ========================================================================================
 # Operations
@@ -39,6 +40,12 @@ struct Operation {
 
     resetOscillatorPhase @7 :ResetOscillatorPhaseOp;
     # Reset oscillator phase to zero.
+
+    send @8 :SendOp;
+    # HQCS: commit one logical packet on an outbound stream.
+
+    markStale @9 :MarkStaleOp;
+    # HQCS: open an acceptance window on a stream-bound variable or pulse.
   }
 }
 
@@ -223,6 +230,34 @@ struct ResetOscillatorPhaseOp {
   signal @0 :Common.Id = .Common.noneId;
   # Signal whose oscillator phase should be reset. `Common.noneId` resets all
   # oscillators in the current execution context.
+}
+
+# ========================================================================================
+# HQCS Operations
+
+struct SendOp {
+  stream @0 :Common.Id;
+  # Index into `Experiment.streams`.
+
+  args @1 :List(SendArg);
+  # Literal values for the schema's non-measurement fields.
+}
+
+struct SendArg {
+  name @0 :Text;
+  # Stream schema field name.
+
+  value @1 :Coprocessor.VariableValue;
+}
+
+struct MarkStaleOp {
+  target :union {
+    variable @0 :Common.Id;
+    # Index into `Experiment.variables`.
+
+    pulse @1 :Common.Id;
+    # Index into `Experiment.pulses`.
+  }
 }
 
 # ========================================================================================

@@ -22,6 +22,9 @@ class _ContextObjectCacheStorage(threading.local):
 
 _contexts_pulse = _ContextObjectCacheStorage()
 _contexts_section = _ContextObjectCacheStorage()
+_contexts_coprocessor = _ContextObjectCacheStorage()
+_contexts_stream = _ContextObjectCacheStorage()
+_contexts_variable = _ContextObjectCacheStorage()
 
 
 @contextmanager
@@ -29,6 +32,9 @@ def create_caches() -> Generator[ObjectCache, None, None]:
     with (
         PulseCache.create_object_cache(),
         SectionCache.create_object_cache(),
+        CoprocessorCache.create_object_cache(),
+        StreamCache.create_object_cache(),
+        VariableCache.create_object_cache(),
     ):
         yield None
 
@@ -178,3 +184,24 @@ class PulseCache(ObjectCache[Pulse]):
 class SectionCache(ObjectCache[Section]):
     _contexts: _ContextObjectCacheStorage = _contexts_section
     _key_prefix: str = "s"
+
+
+class CoprocessorCache(ObjectCache):
+    """Identity cache for HQCS `Coprocessor` cross-references."""
+
+    _contexts: _ContextObjectCacheStorage = _contexts_coprocessor
+    _key_prefix: str = "c"
+
+
+class StreamCache(ObjectCache):
+    """Identity cache for HQCS stream cross-references."""
+
+    _contexts: _ContextObjectCacheStorage = _contexts_stream
+    _key_prefix: str = "st"
+
+
+class VariableCache(ObjectCache):
+    """Identity cache for HQCS `Variable` cross-references."""
+
+    _contexts: _ContextObjectCacheStorage = _contexts_variable
+    _key_prefix: str = "v"

@@ -20,9 +20,12 @@ from laboneq.core.types.enums.execution_type import ExecutionType
 from laboneq.core.types.enums.repetition_mode import RepetitionMode
 from laboneq.core.types.enums.section_alignment import SectionAlignment
 from laboneq.core.types.enums.section_timing_mode import SectionTimingMode
+from laboneq.dsl.coprocessor.operations import _MarkStale, _Send
+from laboneq.dsl.coprocessor.predicate import _IsLive
 from laboneq.dsl.experiment.acquire import Acquire
 from laboneq.dsl.experiment.call import Call
 from laboneq.dsl.experiment.delay import Delay
+from laboneq.dsl.experiment.do_until import DoUntilSection
 from laboneq.dsl.experiment.experiment_signal import ExperimentSignal
 from laboneq.dsl.experiment.play_pulse import PlayPulse
 from laboneq.dsl.experiment.pulse import PulseFunctional, PulseSampled
@@ -41,6 +44,11 @@ from laboneq.dsl.experiment.set_node import SetNode
 from laboneq.dsl.parameter import LinearSweepParameter, SweepParameter
 from laboneq.dsl.prng import PRNG, PRNGSample
 from laboneq.serializers._cache import PulseCache, SectionCache
+from laboneq.serializers.implementations._models import _coprocessor
+from laboneq.serializers.implementations._models._coprocessor import (
+    StreamModel,
+    VariableModel,
+)
 
 from ._calibration import (
     LinearSweepParameterModel,
@@ -234,6 +242,28 @@ PulseParameterValueModel = (
 PulseParameterModel = dict[str, PulseParameterValueModel]
 
 
+_UNSUPPORTED_VALUE_HINT = (
+    "Supported types are int, float, complex, str, bytes, bool, None, SweepParameter,"
+    " LinearSweepParameter, and (nested) lists or str-keyed dicts of these; a sweep"
+    " parameter must be the value itself, as it is not resolved when nested."
+    " Convert the value to a supported type (numpy arrays: `.tolist()`), or serialize it"
+    " to `bytes` and deserialize it inside the pulse sampler or near-time callback that"
+    " consumes it."
+)
+
+
+def _unsupported_value_error(value) -> ValueError:
+    """Build the error raised for a value LabOne Q cannot serialize.
+
+    Callers may prefix the message with the origin of the value (which pulse parameter or
+    callback argument it came from); the message itself therefore names no origin.
+    """
+    return ValueError(
+        f"Unsupported value of type {type(value).__name__}: {value!r}."
+        f" {_UNSUPPORTED_VALUE_HINT}"
+    )
+
+
 def _unstructure_pulse_parameter_model(obj):
     return {k: _unstructure_pulse_parameter_value(v) for k, v in obj.items()}
 
@@ -251,9 +281,7 @@ def _unstructure_pulse_parameter_value(value):
             PulseParameterValueModels,
             _converter,
         )
-    raise ValueError(
-        f"Pulse parameters with type {type(value).__name__} are not supported: {value!r}"
-    )
+    raise _unsupported_value_error(value)
 
 
 def _structure_pulse_parameter_model(obj):
@@ -273,9 +301,7 @@ def _structure_pulse_parameter_value(value):
         return [_structure_pulse_parameter_value(item) for item in value]
     if isinstance(value, dict):
         return {k: _structure_pulse_parameter_value(v) for k, v in value.items()}
-    raise ValueError(
-        f"Pulse parameters with type {type(value).__name__} are not supported: {value!r}"
-    )
+    raise _unsupported_value_error(value)
 
 
 def _guess_sweep_parameter_type_v4_to_v5(obj):
@@ -575,13 +601,86 @@ class CallModel:
         )
 
 
+def _unstructure_hqcs_target(target):
+    """Serialize a `Variable | Pulse | None` cross-reference.
+
+    Both arms resolve to a `$ref` via their identity cache once the target has
+    been serialized at its canonical site (a stream field accessor for a
+    Variable; a stream field or a section for a Pulse). The `_kind` tag selects
+    the model on the way back in.
+    """
+    if target is None:
+        return None
+    from laboneq.dsl.variable import Variable
+
+    if isinstance(target, Variable):
+        return {"_kind": "variable", **_converter.unstructure(target, VariableModel)}
+    return {"_kind": "pulse", **_converter.unstructure(target, PulseModel)}
+
+
+def _structure_hqcs_target(d):
+    if d is None:
+        return None
+    if d["_kind"] == "variable":
+        return _converter.structure(d, VariableModel)
+    return _converter.structure(d, PulseModel)
+
+
+@attrs.define
+class _SendModel:
+    """Model for `_Send` operations (`send(stream, **kwargs)` in a section).
+
+    The stream is cross-referenced by `$ref` into the experiment's stream
+    identity cache (`StreamCache`); the canonical serialization lives in the
+    experiment's `streams` list, which is serialized before the sections.
+    """
+
+    stream: StreamModel
+    literal_kwargs: dict
+    _target_class: ClassVar[Type] = _Send
+
+    @classmethod
+    def _unstructure(cls, obj):
+        return {
+            "stream": _converter.unstructure(obj.stream, StreamModel),
+            "literal_kwargs": obj.literal_kwargs,
+        }
+
+    @classmethod
+    def _structure(cls, obj, _):
+        stream = _converter.structure(obj["stream"], StreamModel)
+        return _Send(stream=stream, literal_kwargs=obj.get("literal_kwargs", {}))
+
+
+@attrs.define
+class _MarkStaleModel:
+    """Model for `_MarkStale` operations (`mark_stale(target)` in a section).
+
+    The target is a `Variable` or a `Pulse`, cross-referenced by `$ref` via
+    its identity cache.
+    """
+
+    target: dict | None
+    _target_class: ClassVar[Type] = _MarkStale
+
+    @classmethod
+    def _unstructure(cls, obj):
+        return {"target": _unstructure_hqcs_target(obj.target)}
+
+    @classmethod
+    def _structure(cls, obj, _):
+        return _MarkStale(target=_structure_hqcs_target(obj.get("target")))
+
+
 _operation_types = [
     AcquireModel,
     CallModel,
     DelayModel,
+    _MarkStaleModel,
     PlayPulseModel,
     ReserveModel,
     SetNodeModel,
+    _SendModel,
     ResetOscillatorPhaseModel,
 ]
 _operation_types_target_class = {cl._target_class.__name__ for cl in _operation_types}
@@ -589,9 +688,11 @@ OperationModel = Union[
     AcquireModel,
     CallModel,
     DelayModel,
+    _MarkStaleModel,
     PlayPulseModel,
     ReserveModel,
     SetNodeModel,
+    _SendModel,
     ResetOscillatorPhaseModel,
 ]
 
@@ -606,6 +707,8 @@ def _structure_operation_model(d, _, _converter: Converter):
 
 
 PlayAfterModel = NewType("PlayAfterModel", str | Section | list[str | Section] | None)
+
+MatchVariableModel = NewType("MatchVariableModel", object)
 
 
 def _unstructure_play_after_model(obj):
@@ -655,6 +758,7 @@ class MatchModel(SectionModel):
     prng_sample: PRNGSampleModel | None
     sweep_parameter: ParameterModel | None
     local: bool | None
+    variable: MatchVariableModel = None
     _target_class: ClassVar[Type] = Match
 
 
@@ -706,6 +810,7 @@ _section_types = [
     PRNGSetupModel,
     PRNGLoopModel,
 ]
+_section_types_target_class = {cl._target_class.__name__ for cl in _section_types}
 AllSectionModel = Union[
     SectionModel,
     MatchModel,
@@ -718,12 +823,90 @@ AllSectionModel = Union[
 
 
 def _unstructure_section_model(obj, _converter: Converter):
+    if type(obj) is DoUntilSection:
+        return _unstructure_do_until_section(obj, _converter)
     return unstructure_union_generic_type(obj, _section_types, _converter)
 
 
 def _structure_section_model(d, _, _converter: Converter):
+    if d.get("_type") == "DoUntilSection":
+        return _structure_do_until_section(d, _converter)
     # cattrs requires the type to be passed as the second argument
     return structure_union_generic_type(d, _section_types, _converter)
+
+
+def _unstructure_do_until_condition(condition) -> dict | None:
+    """Serialize a DoUntilSection condition.
+
+    - `_IsLive`: target (`Variable` or `Pulse`) cross-referenced by `$ref`.
+    - Comparison predicates: not yet serializable; stored as `None`.
+    """
+    if isinstance(condition, _IsLive):
+        return {
+            "_kind": "is_live",
+            "target": _unstructure_hqcs_target(condition.target),
+        }
+    return None
+
+
+def _structure_do_until_condition(d: dict | None):
+    if d is None:
+        return None
+    return _IsLive(target=_structure_hqcs_target(d.get("target")))
+
+
+def _unstructure_do_until_section(obj: "DoUntilSection", _converter: Converter) -> dict:
+    """Serialize a DoUntilSection.
+
+    Notes:
+    - `condition`: an `is_live(...)` arrival predicate round-trips via
+      `$ref` on its target; comparison predicates are not yet serializable
+      and are stored as `None`.
+    - `max_count`: stored faithfully.
+    """
+    children = [_unstructure_allsection_model_operation_model(c) for c in obj.children]
+
+    return {
+        "_type": "DoUntilSection",
+        "uid": obj.uid,
+        "name": obj.name,
+        "alignment": _converter.unstructure(obj.alignment),
+        "execution_type": obj.execution_type,
+        "length": obj.length,
+        "play_after": _unstructure_play_after_model(obj.play_after),
+        "children": children,
+        "trigger": obj.trigger,
+        "section_timing_mode": _converter.unstructure(obj.section_timing_mode),
+        "on_system_grid": obj.on_system_grid,
+        "condition": _unstructure_do_until_condition(obj.condition),
+        "max_count": obj.max_count,
+    }
+
+
+def _structure_do_until_section(d: dict, _converter: Converter) -> "DoUntilSection":
+    """Deserialize a DoUntilSection from a dict."""
+    children = [
+        _structure_allsection_model_operation_model(c, None)
+        for c in d.get("children", [])
+    ]
+
+    section = DoUntilSection(
+        uid=d.get("uid"),
+        name=d.get("name", ""),
+        alignment=_converter.structure(d.get("alignment"), SectionAlignmentModel),
+        execution_type=d.get("execution_type"),
+        length=d.get("length"),
+        play_after=_structure_play_after_model(d.get("play_after"), None),
+        children=children,
+        trigger=d.get("trigger", {}),
+        section_timing_mode=_converter.structure(
+            d.get("section_timing_mode"), SectionTimingModeModel | None
+        ),
+        on_system_grid=d.get("on_system_grid"),
+        condition=_structure_do_until_condition(d.get("condition")),
+        max_count=d.get("max_count", 1),
+    )
+    return section
 
 
 # PRNG-related models
@@ -788,6 +971,11 @@ def make_converter():
     _converter.register_unstructure_hook(PlayAfterModel, _unstructure_play_after_model)
     _converter.register_structure_hook(PlayAfterModel, _structure_play_after_model)
 
+    _converter.register_unstructure_hook(MatchVariableModel, _unstructure_hqcs_target)
+    _converter.register_structure_hook(
+        MatchVariableModel, lambda d, _: _structure_hqcs_target(d)
+    )
+
     _converter.register_unstructure_hook(
         AllSectionModel, partial(_unstructure_section_model, _converter=_converter)
     )
@@ -804,6 +992,7 @@ def make_converter():
         AllSectionModel | OperationModel, _structure_allsection_model_operation_model
     )
 
+    _coprocessor.register(_converter)
     register_models(_converter, collect_models(sys.modules[__name__]))
     return _converter
 
